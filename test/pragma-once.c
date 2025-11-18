@@ -1,8 +1,8 @@
 #include "test.h"
 
-#pragma once
+#include "pragma-once.h"
 
-#include "test/pragma-once.c"
+#include "pragma-once.h"
 
 int main() {
   printf("OK\n");

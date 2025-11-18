@@ -38,6 +38,8 @@ typedef struct { char a, b[]; } T65;
 T65 g65 = {'f','o','o',0};
 T65 g66 = {'f','o','o','b','a','r',0};
 
+unsigned long g67 = (unsigned long)(((T65*)0)->b);
+
 int main() {
   ASSERT(1, ({ int x[3]={1,2,3}; x[0]; }));
   ASSERT(2, ({ int x[3]={1,2,3}; x[1]; }));
@@ -178,8 +180,13 @@ int main() {
   ASSERT(3, sizeof(g60));
   ASSERT(6, sizeof(g61));
 
-  ASSERT(4, sizeof(g65));
-  ASSERT(7, sizeof(g66));
+  // This does not match clang behaviour.
+  // Flexible array members are always treated as if they have a size of 0,
+  // even if we know the actual size from a static initializer.
+  // ASSERT(4, sizeof(g65));
+  // ASSERT(7, sizeof(g66));
+  ASSERT(1, sizeof(g65));
+  ASSERT(1, sizeof(g66));
   ASSERT(0, strcmp(g65.b, "oo"));
   ASSERT(0, strcmp(g66.b, "oobar"));
 
@@ -210,8 +217,13 @@ int main() {
   ASSERT(3, sizeof(g60));
   ASSERT(6, sizeof(g61));
 
-  ASSERT(4, sizeof(g65));
-  ASSERT(7, sizeof(g66));
+  // This does not match clang behaviour.
+  // Flexible array members are always treated as if they have a size of 0,
+  // even if we know the actual size from a static initializer.
+  // ASSERT(4, sizeof(g65));
+  // ASSERT(7, sizeof(g66));
+  ASSERT(1, sizeof(g65));
+  ASSERT(1, sizeof(g66));
   ASSERT(0, strcmp(g65.b, "oo"));
   ASSERT(0, strcmp(g66.b, "oobar"));
 
@@ -261,6 +273,8 @@ int main() {
 
   ASSERT(16, ({ char x[]={[2 ... 10]='a', [7]='b', [15 ... 15]='c', [3 ... 5]='d'}; sizeof(x); }));
   ASSERT(0, ({ char x[]={[2 ... 10]='a', [7]='b', [15 ... 15]='c', [3 ... 5]='d'}; memcmp(x, "\0\0adddabaaa\0\0\0\0c", 16); }));
+
+  ASSERT(1, g67);
 
   printf("OK\n");
   return 0;

@@ -20,8 +20,9 @@ int main() {
   ASSERT(0, __builtin_types_compatible_p(int (*)(float, double), int));
   ASSERT(0, __builtin_types_compatible_p(int (*)(float, double), int (*)(float)));
   ASSERT(0, __builtin_types_compatible_p(int (*)(float, double), int (*)(float, double, int)));
-  ASSERT(1, __builtin_types_compatible_p(double (*)(...), double (*)(...)));
-  ASSERT(0, __builtin_types_compatible_p(double (*)(...), double (*)(void)));
+  // Clang: error: ISO C requires a named parameter before '...'
+  // ASSERT(1, __builtin_types_compatible_p(double (*)(...), double (*)(...)));
+  // ASSERT(0, __builtin_types_compatible_p(double (*)(...), double (*)(void)));
 
   ASSERT(1, ({ typedef struct {int a;} T; __builtin_types_compatible_p(T, T); }));
   ASSERT(1, ({ typedef struct {int a;} T; __builtin_types_compatible_p(T, const T); }));

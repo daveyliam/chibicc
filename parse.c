@@ -44,6 +44,8 @@ typedef struct {
   bool is_static;
   bool is_extern;
   bool is_inline;
+  bool is_noreturn;
+  bool is_const;
   bool is_tls;
   int align;
 } VarAttr;
@@ -85,14 +87,17 @@ struct InitDesg {
 static Obj *locals;
 
 // Likewise, global variables are accumulated to this list.
+// Except we use a head pointer to keep the list in the same
+// order as the globals are defined.
 static Obj *globals;
+static Obj *globals_head;
 
 static Scope *scope = &(Scope){};
 
 // Points to the function object the parser is currently parsing.
 static Obj *current_fn;
 
-// Lists of all goto statements and labels in the curent function.
+// Lists of all goto statements and labels in the current function.
 static Node *gotos;
 static Node *labels;
 
@@ -103,8 +108,6 @@ static char *cont_label;
 // Points to a node representing a switch if we are parsing
 // a switch statement. Otherwise, NULL.
 static Node *current_switch;
-
-static Obj *builtin_alloca;
 
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
@@ -125,8 +128,8 @@ static Node *stmt(Token **rest, Token *tok);
 static Node *expr_stmt(Token **rest, Token *tok);
 static Node *expr(Token **rest, Token *tok);
 static int64_t eval(Node *node);
-static int64_t eval2(Node *node, char ***label);
-static int64_t eval_rval(Node *node, char ***label);
+static int64_t eval2(Node *node, Obj **gvar);
+static int64_t eval_rval(Node *node, Obj **gvar);
 static bool is_const_expr(Node *node);
 static Node *assign(Token **rest, Token *tok);
 static Node *logor(Token **rest, Token *tok);
@@ -215,12 +218,12 @@ static Node *new_num(int64_t val, Token *tok) {
   return node;
 }
 
-static Node *new_long(int64_t val, Token *tok) {
-  Node *node = new_node(ND_NUM, tok);
-  node->val = val;
-  node->ty = ty_long;
-  return node;
-}
+// static Node *new_long(int64_t val, Token *tok) {
+//   Node *node = new_node(ND_NUM, tok);
+//   node->val = val;
+//   node->ty = ty_long;
+//   return node;
+// }
 
 static Node *new_ulong(long val, Token *tok) {
   Node *node = new_node(ND_NUM, tok);
@@ -317,10 +320,14 @@ static Obj *new_lvar(char *name, Type *ty) {
 
 static Obj *new_gvar(char *name, Type *ty) {
   Obj *var = new_var(name, ty);
-  var->next = globals;
   var->is_static = true;
   var->is_definition = true;
-  globals = var;
+  if (globals_head == NULL) {
+    globals = var;
+  } else {
+    globals_head->next = var;
+  }
+  globals_head = var;
   return var;
 }
 
@@ -334,8 +341,52 @@ static Obj *new_anon_gvar(Type *ty) {
 }
 
 static Obj *new_string_literal(char *p, Type *ty) {
-  Obj *var = new_anon_gvar(ty);
-  var->init_data = p;
+  static int id = 0;
+  char *name = format(".str.%d", id++);
+  Obj *var = new_gvar(name, ty);
+
+  GVarInitializer *ginit = calloc(1, sizeof(GVarInitializer));
+  var->init = ginit;
+  var->is_const = true;
+
+  ginit->ty = ty;
+
+  if (ty->array_len <= 0) {
+    return var;
+  }
+
+  ginit->n_children = ty->array_len;
+  ginit->children = calloc(ty->array_len, sizeof(GVarInitializer));
+
+  switch (ty->base->size) {
+  case 1: {
+    uint8_t *str = (uint8_t *)p;
+    for (int i = 0; i < ty->array_len; i++) {
+      ginit->children[i].ty = ty->base;
+      ginit->children[i].val = str[i];
+    }
+    break;
+  }
+  case 2: {
+    uint16_t *str = (uint16_t *)p;
+    for (int i = 0; i < ty->array_len; i++) {
+      ginit->children[i].ty = ty->base;
+      ginit->children[i].val = str[i];
+    }
+    break;
+  }
+  case 4: {
+    uint32_t *str = (uint32_t *)p;
+    for (int i = 0; i < ty->array_len; i++) {
+      ginit->children[i].ty = ty->base;
+      ginit->children[i].val = str[i];
+    }
+    break;
+  }
+  default:
+    unreachable();
+  }
+
   return var;
 }
 
@@ -428,11 +479,28 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     }
 
     // These keywords are recognized but ignored.
-    if (consume(&tok, tok, "const") || consume(&tok, tok, "volatile") ||
+    if (consume(&tok, tok, "volatile") ||
         consume(&tok, tok, "auto") || consume(&tok, tok, "register") ||
         consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
-        consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
+        consume(&tok, tok, "__restrict__"))
       continue;
+
+    if (equal(tok, "const")) {
+      tok = tok->next;
+      if (attr) {
+        attr->is_const = true;
+      }
+      continue;
+    }
+
+    if (equal(tok, "_Noreturn")) {
+      if (!attr) {
+        error_tok(tok, "_Noreturn is not allowed in this context");
+      }
+      tok = tok->next;
+      attr->is_noreturn = true;
+      continue;
+    }
 
     if (equal(tok, "_Atomic")) {
       tok = tok->next;
@@ -622,8 +690,10 @@ static Type *func_params(Token **rest, Token *tok, Type *ty) {
     cur = cur->next = copy_type(ty2);
   }
 
-  if (cur == &head)
-    is_variadic = true;
+  // XXX : variadic if param list is empty?
+  // if (cur == &head) {
+  //   is_variadic = true;
+  // }
 
   ty = func_type(ty);
   ty->params = head.next;
@@ -832,9 +902,8 @@ static Node *compute_vla_size(Type *ty, Token *tok) {
 }
 
 static Node *new_alloca(Node *sz) {
-  Node *node = new_unary(ND_FUNCALL, new_var_node(builtin_alloca, sz->tok), sz->tok);
-  node->func_ty = builtin_alloca->ty;
-  node->ty = builtin_alloca->ty->return_ty;
+  Node *node = new_node(ND_ALLOCA, sz->tok);
+  node->ty = pointer_to(ty_void);
   node->args = sz;
   add_type(sz);
   return node;
@@ -1296,8 +1365,17 @@ static Initializer *initializer(Token **rest, Token *tok, Type *ty, Type **new_t
   Initializer *init = new_initializer(ty, true);
   initializer2(rest, tok, init);
 
+  *new_ty = init->ty;
+
+  // If a struct or union type ends with a flexibly sized array then we need to convert it to a
+  // fixed size type. Note that this only affects the type of variable this initializer is for.
+  // Each variable will get its own separate resolved type.
+  // Also note that for structs only the last member can be a flexible array.
+  // It is also an error to try to initialize a struct with a nested flexible struct.
+  // It is also an error to initialize the flexible array member of a local var.
+  // TODO : Also update array_len and union variants?
   if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->is_flexible) {
-    ty = copy_struct_type(ty);
+    ty = copy_struct_type(init->ty);
 
     Member *mem = ty->members;
     while (mem->next)
@@ -1305,11 +1383,9 @@ static Initializer *initializer(Token **rest, Token *tok, Type *ty, Type **new_t
     mem->ty = init->children[mem->idx]->ty;
     ty->size += mem->ty->size;
 
-    *new_ty = ty;
-    return init;
+    init->ty = ty;
   }
 
-  *new_ty = init->ty;
   return init;
 }
 
@@ -1388,95 +1464,109 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   return new_binary(ND_COMMA, lhs, rhs, tok);
 }
 
-static uint64_t read_buf(char *buf, int sz) {
-  if (sz == 1)
-    return *buf;
-  if (sz == 2)
-    return *(uint16_t *)buf;
-  if (sz == 4)
-    return *(uint32_t *)buf;
-  if (sz == 8)
-    return *(uint64_t *)buf;
-  unreachable();
-}
+// static uint64_t read_buf(char *buf, int sz) {
+//   if (sz == 1)
+//     return *buf;
+//   if (sz == 2)
+//     return *(uint16_t *)buf;
+//   if (sz == 4)
+//     return *(uint32_t *)buf;
+//   if (sz == 8)
+//     return *(uint64_t *)buf;
+//   unreachable();
+// }
 
-static void write_buf(char *buf, uint64_t val, int sz) {
-  if (sz == 1)
-    *buf = val;
-  else if (sz == 2)
-    *(uint16_t *)buf = val;
-  else if (sz == 4)
-    *(uint32_t *)buf = val;
-  else if (sz == 8)
-    *(uint64_t *)buf = val;
-  else
-    unreachable();
-}
+// static void write_buf(char *buf, uint64_t val, int sz) {
+//   if (sz == 1)
+//     *buf = val;
+//   else if (sz == 2)
+//     *(uint16_t *)buf = val;
+//   else if (sz == 4)
+//     *(uint32_t *)buf = val;
+//   else if (sz == 8)
+//     *(uint64_t *)buf = val;
+//   else
+//     unreachable();
+// }
 
-static Relocation *
-write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int offset) {
-  if (ty->kind == TY_ARRAY) {
-    int sz = ty->base->size;
-    for (int i = 0; i < ty->array_len; i++)
-      cur = write_gvar_data(cur, init->children[i], ty->base, buf, offset + sz * i);
-    return cur;
+static void
+build_gvar_init(GVarInitializer *ginit, Initializer *init) {
+  ginit->ty = init->ty;
+  ginit->tok = init->tok;
+
+  if (init->ty->kind == TY_ARRAY) {
+    ginit->n_children = init->ty->array_len;
+    ginit->children = calloc(ginit->n_children, sizeof(GVarInitializer));
+    for (int i = 0; i < ginit->n_children; i++) {
+      build_gvar_init(&ginit->children[i], init->children[i]);
+    }
+    return;
   }
 
-  if (ty->kind == TY_STRUCT) {
-    for (Member *mem = ty->members; mem; mem = mem->next) {
+  if (init->ty->kind == TY_STRUCT) {
+    ginit->n_children = 0;
+    for (Member *mem = init->ty->members; mem; mem = mem->next) {
+      ginit->n_children += 1;
+    }
+    ginit->children = calloc(ginit->n_children, sizeof(GVarInitializer));
+    for (Member *mem = init->ty->members; mem; mem = mem->next) {
       if (mem->is_bitfield) {
-        Node *expr = init->children[mem->idx]->expr;
-        if (!expr)
-          break;
+        // Node *expr = init->children[mem->idx]->expr;
+        // if (!expr)
+        //   break;
 
-        char *loc = buf + offset + mem->offset;
-        uint64_t oldval = read_buf(loc, mem->ty->size);
-        uint64_t newval = eval(expr);
-        uint64_t mask = (1L << mem->bit_width) - 1;
-        uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
-        write_buf(loc, combined, mem->ty->size);
+        // char *loc = buf + offset + mem->offset;
+        // uint64_t oldval = read_buf(loc, mem->ty->size);
+        // uint64_t newval = eval(expr);
+        // uint64_t mask = (1L << mem->bit_width) - 1;
+        // uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
+        // write_buf(loc, combined, mem->ty->size);
+        error_tok(init->tok, "global var bitfield init not supported");
       } else {
-        cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
-                              offset + mem->offset);
+        build_gvar_init(&ginit->children[mem->idx], init->children[mem->idx]);
       }
     }
-    return cur;
+    return;
   }
 
-  if (ty->kind == TY_UNION) {
-    if (!init->mem)
-      return cur;
-    return write_gvar_data(cur, init->children[init->mem->idx],
-                           init->mem->ty, buf, offset);
+  if (init->ty->kind == TY_UNION) {
+    Initializer *child_init;
+    if (init->mem) {
+      child_init = init->children[init->mem->idx];
+    } else {
+      // init->mem is null when there is no initializer for the union.
+      // For example:
+      //   union { int a; } g51[2] = {};
+      // union_initializer() is never called on the new initializer from
+      // new_initializer(). 
+      child_init = init->children[0];
+    }
+  
+    ginit->ty = init->ty;
+    ginit->n_children = 1;
+    ginit->children = calloc(1, sizeof(GVarInitializer));
+    build_gvar_init(ginit->children, child_init);
+    return;
   }
 
-  if (!init->expr)
-    return cur;
-
-  if (ty->kind == TY_FLOAT) {
-    *(float *)(buf + offset) = eval_double(init->expr);
-    return cur;
+  if (!init->expr) {
+    return;
   }
 
-  if (ty->kind == TY_DOUBLE) {
-    *(double *)(buf + offset) = eval_double(init->expr);
-    return cur;
+  if (init->ty->kind == TY_FLOAT || init->ty->kind == TY_DOUBLE) {
+    ginit->fval = eval_double(init->expr);
+    return;
   }
 
-  char **label = NULL;
-  uint64_t val = eval2(init->expr, &label);
+  Obj* gvar = NULL;
+  int64_t val = eval2(init->expr, &gvar);
 
-  if (!label) {
-    write_buf(buf + offset, val, ty->size);
-    return cur;
+  // If eval2 sets gvar it means that the initializer refers to another
+  // global var. The returned val is the offset from the global var.
+  if (gvar != NULL) {
+    ginit->var = gvar;
   }
-
-  Relocation *rel = calloc(1, sizeof(Relocation));
-  rel->offset = offset;
-  rel->label = label;
-  rel->addend = val;
-  cur->next = rel;
-  return cur->next;
+  ginit->val = val;
 }
 
 // Initializers for global variables are evaluated at compile-time and
@@ -1484,13 +1574,17 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
 // objects to a flat byte array. It is a compile error if an
 // initializer list contains a non-constant expression.
 static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
+  // initializer() updates the type of var if it contains flexible arrays.
+  // Essentially a new type will be created with all flexible arrays (and the containing struct)
+  // converted to a fixed size.
+  // This is correct, as for all purposes it IS a new type and can't be converted to a different
+  // version of the type with differently sized arrays.
+  // Also note that all types that make it to the codegen are fixed size, flexibly sized types are
+  // only a concern for the parser.
   Initializer *init = initializer(rest, tok, var->ty, &var->ty);
-
-  Relocation head = {};
-  char *buf = calloc(1, var->ty->size);
-  write_gvar_data(&head, init, var->ty, buf, 0);
-  var->init_data = buf;
-  var->rel = head.next;
+  GVarInitializer *ginit = calloc(1, sizeof(GVarInitializer));
+  build_gvar_init(ginit, init);
+  var->init = ginit;
 }
 
 // Returns true if a given token represents a type.
@@ -1628,7 +1722,9 @@ static Node *stmt(Token **rest, Token *tok) {
     tok = skip(tok->next, ":");
     node->label = new_unique_name();
     node->lhs = stmt(rest, tok);
-    current_switch->default_case = node;
+    node->is_default = true;
+    node->case_next = current_switch->case_next;
+    current_switch->case_next = node;
     return node;
   }
 
@@ -1728,8 +1824,8 @@ static Node *stmt(Token **rest, Token *tok) {
   if (equal(tok, "break")) {
     if (!brk_label)
       error_tok(tok, "stray break");
-    Node *node = new_node(ND_GOTO, tok);
-    node->unique_label = brk_label;
+    Node *node = new_node(ND_BREAK, tok);
+    // node->unique_label = brk_label;
     *rest = skip(tok->next, ";");
     return node;
   }
@@ -1737,8 +1833,8 @@ static Node *stmt(Token **rest, Token *tok) {
   if (equal(tok, "continue")) {
     if (!cont_label)
       error_tok(tok, "stray continue");
-    Node *node = new_node(ND_GOTO, tok);
-    node->unique_label = cont_label;
+    Node *node = new_node(ND_CONTINUE, tok);
+    // node->unique_label = cont_label;
     *rest = skip(tok->next, ";");
     return node;
   }
@@ -1746,7 +1842,7 @@ static Node *stmt(Token **rest, Token *tok) {
   if (tok->kind == TK_IDENT && equal(tok->next, ":")) {
     Node *node = new_node(ND_LABEL, tok);
     node->label = strndup(tok->loc, tok->len);
-    node->unique_label = new_unique_name();
+    // node->unique_label = new_unique_name();
     node->lhs = stmt(rest, tok->next->next);
     node->goto_next = labels;
     labels = node;
@@ -1832,20 +1928,50 @@ static int64_t eval(Node *node) {
 // Evaluate a given node as a constant expression.
 //
 // A constant expression is either just a number or ptr+n where ptr
-// is a pointer to a global variable and n is a postiive/negative
+// is a pointer to a global variable and n is a positive/negative
 // number. The latter form is accepted only as an initialization
 // expression for a global variable.
-static int64_t eval2(Node *node, char ***label) {
+static int64_t eval2(Node *node, Obj **gvar) {
   add_type(node);
 
   if (is_flonum(node->ty))
     return eval_double(node);
 
+  // TODO : We shouldn't need to know the sizes of types and member offsets
+  // here. Build an index list instead? But then would need an actual expression tree.
+  // Query codegen for type sizes and member offsets?
+  // Or just build a simplified constant expression tree and pass to codegen?
+  // const_expr and eval (with no ability to reference gvars) kind of need to resolve
+  // to an integer though, as it is used for case conditions (which in LLVM can be a valueref)
+  // and array sizes (which are just integers).
+
   switch (node->kind) {
-  case ND_ADD:
-    return eval2(node->lhs, label) + eval(node->rhs);
-  case ND_SUB:
-    return eval2(node->lhs, label) - eval(node->rhs);
+  case ND_ADD: {
+    int64_t lhs = eval2(node->lhs, gvar);
+    int64_t rhs = eval(node->rhs);
+    if (node->lhs->ty->base) {
+      // ptr + int
+      // XXX : 
+      return lhs + (rhs * node->lhs->ty->base->size);
+    }
+    return lhs + rhs;
+  }
+  case ND_SUB: {
+    int64_t lhs = eval2(node->lhs, gvar);
+    int64_t rhs = eval(node->rhs);
+    if (node->lhs->ty->base) {
+      if (node->rhs->ty->base) {
+        // ptr - ptr
+        // XXX : does this even work? can only have one gvar, but maybe for absolute pointers?
+        // e.g. offsetof uses (type*)0 to calculate member offsets.
+        return (lhs - rhs) / node->lhs->ty->base->size;
+      } else {
+        // ptr - int
+        return lhs - (rhs * node->lhs->ty->base->size);
+      }
+    }
+    return lhs - rhs;
+  }
   case ND_MUL:
     return eval(node->lhs) * eval(node->rhs);
   case ND_DIV:
@@ -1883,9 +2009,9 @@ static int64_t eval2(Node *node, char ***label) {
       return (uint64_t)eval(node->lhs) <= eval(node->rhs);
     return eval(node->lhs) <= eval(node->rhs);
   case ND_COND:
-    return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
+    return eval(node->cond) ? eval2(node->then, gvar) : eval2(node->els, gvar);
   case ND_COMMA:
-    return eval2(node->rhs, label);
+    return eval2(node->rhs, gvar);
   case ND_NOT:
     return !eval(node->lhs);
   case ND_BITNOT:
@@ -1895,7 +2021,7 @@ static int64_t eval2(Node *node, char ***label) {
   case ND_LOGOR:
     return eval(node->lhs) || eval(node->rhs);
   case ND_CAST: {
-    int64_t val = eval2(node->lhs, label);
+    int64_t val = eval2(node->lhs, gvar);
     if (is_integer(node->ty)) {
       switch (node->ty->size) {
       case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;
@@ -1906,22 +2032,25 @@ static int64_t eval2(Node *node, char ***label) {
     return val;
   }
   case ND_ADDR:
-    return eval_rval(node->lhs, label);
+    return eval_rval(node->lhs, gvar);
   case ND_LABEL_VAL:
-    *label = &node->unique_label;
+    // *label = &node->unique_label;
+    error_tok(node->tok, "label values not supported in initializers");
     return 0;
   case ND_MEMBER:
-    if (!label)
+    if (!gvar)
       error_tok(node->tok, "not a compile-time constant");
     if (node->ty->kind != TY_ARRAY)
       error_tok(node->tok, "invalid initializer");
-    return eval_rval(node->lhs, label) + node->member->offset;
+    return eval_rval(node->lhs, gvar) + node->member->offset;
   case ND_VAR:
-    if (!label)
+    if (!gvar)
       error_tok(node->tok, "not a compile-time constant");
     if (node->var->ty->kind != TY_ARRAY && node->var->ty->kind != TY_FUNC)
       error_tok(node->tok, "invalid initializer");
-    *label = &node->var->name;
+    if (*gvar != NULL)
+      error_tok(node->tok, "not a compile-time constant, multiple global vars involved");
+    *gvar = node->var;
     return 0;
   case ND_NUM:
     return node->val;
@@ -1930,17 +2059,19 @@ static int64_t eval2(Node *node, char ***label) {
   error_tok(node->tok, "not a compile-time constant");
 }
 
-static int64_t eval_rval(Node *node, char ***label) {
+static int64_t eval_rval(Node *node, Obj **gvar) {
   switch (node->kind) {
   case ND_VAR:
     if (node->var->is_local)
       error_tok(node->tok, "not a compile-time constant");
-    *label = &node->var->name;
+    if (*gvar != NULL)
+      error_tok(node->tok, "not a compile-time constant, multiple global vars involved");
+    *gvar = node->var;
     return 0;
   case ND_DEREF:
-    return eval2(node->lhs, label);
+    return eval2(node->lhs, gvar);
   case ND_MEMBER:
-    return eval_rval(node->lhs, label) + node->member->offset;
+    return eval_rval(node->lhs, gvar) + node->member->offset;
   }
 
   error_tok(node->tok, "invalid initializer");
@@ -2006,6 +2137,7 @@ static double eval_double(Node *node) {
   case ND_MUL:
     return eval_double(node->lhs) * eval_double(node->rhs);
   case ND_DIV:
+    fprintf(stderr, "eval_double div %f %f\n", eval_double(node->lhs), eval_double(node->rhs));
     return eval_double(node->lhs) / eval_double(node->rhs);
   case ND_NEG:
     return -eval_double(node->lhs);
@@ -2366,13 +2498,14 @@ static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
   }
 
   // VLA + num
+  // vla_size is an lvar containing the VLA size in bytes, not elements
+  // codegen will need to account for this and pretend the VLA type is i8.
   if (lhs->ty->base->kind == TY_VLA) {
     rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
     return new_binary(ND_ADD, lhs, rhs, tok);
   }
 
   // ptr + num
-  rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
   return new_binary(ND_ADD, lhs, rhs, tok);
 }
 
@@ -2385,19 +2518,8 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
   if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
     return new_binary(ND_SUB, lhs, rhs, tok);
 
-  // VLA + num
-  if (lhs->ty->base->kind == TY_VLA) {
-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
-    add_type(rhs);
-    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
-    node->ty = lhs->ty;
-    return node;
-  }
-
   // ptr - num
   if (lhs->ty->base && is_integer(rhs->ty)) {
-    rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
-    add_type(rhs);
     Node *node = new_binary(ND_SUB, lhs, rhs, tok);
     node->ty = lhs->ty;
     return node;
@@ -2407,7 +2529,7 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
   if (lhs->ty->base && rhs->ty->base) {
     Node *node = new_binary(ND_SUB, lhs, rhs, tok);
     node->ty = ty_long;
-    return new_binary(ND_DIV, node, new_num(lhs->ty->base->size, tok), tok);
+    return node;
   }
 
   error_tok(tok, "invalid operands");
@@ -2896,6 +3018,8 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
       error_tok(tok, "too many arguments");
 
     if (param_ty) {
+      // Function args are cast to the respective parameter type.
+      // TODO : Is this ok? Seems... heavy handed?
       if (param_ty->kind != TY_STRUCT && param_ty->kind != TY_UNION)
         arg = new_cast(arg, param_ty);
       param_ty = param_ty->next;
@@ -2908,8 +3032,9 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
     cur = cur->next = arg;
   }
 
-  if (param_ty)
+  if (param_ty) {
     error_tok(tok, "too few arguments");
+  }
 
   *rest = skip(tok, ")");
 
@@ -2920,8 +3045,9 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
 
   // If a function returns a struct, it is caller's responsibility
   // to allocate a space for the return value.
-  if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION)
+  if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) {
     node->ret_buffer = new_lvar("", node->ty);
+  }
   return node;
 }
 
@@ -3036,6 +3162,14 @@ static Node *primary(Token **rest, Token *tok) {
   if (equal(tok, "_Generic"))
     return generic_selection(rest, tok->next);
 
+  if (equal(tok, "alloca")) {
+    Node *node = new_node(ND_ALLOCA, tok);
+    tok = skip(tok->next, "(");
+    node->args = assign(&tok, tok);
+    *rest = skip(tok, ")");
+    return node;
+  }
+
   if (equal(tok, "__builtin_types_compatible_p")) {
     tok = skip(tok->next, "(");
     Type *t1 = typename(&tok, tok);
@@ -3075,6 +3209,48 @@ static Node *primary(Token **rest, Token *tok) {
     node->lhs = assign(&tok, tok);
     tok = skip(tok, ",");
     node->rhs = assign(&tok, tok);
+    *rest = skip(tok, ")");
+    return node;
+  }
+
+  if (equal(tok, "__builtin_va_start")) {
+    Node *node = new_node(ND_VA_START, tok);
+    tok = skip(tok->next, "(");
+    node->args = assign(&tok, tok);
+    tok = skip(tok, ",");
+    // TODO : should check this is a parameter name.
+    Node *param_node = primary(&tok, tok);
+    if (param_node->kind != ND_VAR) {
+      error_tok(param_node->tok, "expected a parameter name");
+    }
+    *rest = skip(tok, ")");
+    return node;
+  }
+
+  if (equal(tok, "__builtin_va_copy")) {
+    Node *node = new_node(ND_VA_COPY, tok);
+    tok = skip(tok->next, "(");
+    node->args = assign(&tok, tok);
+    tok = skip(tok, ",");
+    node->args->next = assign(&tok, tok);
+    *rest = skip(tok, ")");
+    return node;
+  }
+
+  if (equal(tok, "__builtin_va_end")) {
+    Node *node = new_node(ND_VA_END, tok);
+    tok = skip(tok->next, "(");
+    node->args = assign(&tok, tok);
+    *rest = skip(tok, ")");
+    return node;
+  }
+
+  if (equal(tok, "__builtin_va_arg")) {
+    Node *node = new_node(ND_VA_ARG, tok);
+    tok = skip(tok->next, "(");
+    node->args = assign(&tok, tok);
+    tok = skip(tok, ",");
+    node->arg_ty = typename(&tok, tok);
     *rest = skip(tok, ")");
     return node;
   }
@@ -3161,16 +3337,16 @@ static void resolve_goto_labels(void) {
   for (Node *x = gotos; x; x = x->goto_next) {
     for (Node *y = labels; y; y = y->goto_next) {
       if (!strcmp(x->label, y->label)) {
-        x->unique_label = y->unique_label;
+        // x->unique_label = y->unique_label;
+        x->goto_resolved = true;
         break;
       }
     }
 
-    if (x->unique_label == NULL)
+    if (!x->goto_resolved) {
       error_tok(x->tok->next, "use of undeclared label");
+    }
   }
-
-  gotos = labels = NULL;
 }
 
 static Obj *find_func(char *name) {
@@ -3218,6 +3394,7 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
     fn->is_definition = equal(tok, "{");
     fn->is_static = attr->is_static || (attr->is_inline && !attr->is_extern);
     fn->is_inline = attr->is_inline;
+    fn->is_noreturn = attr->is_noreturn;
   }
 
   fn->is_root = !(fn->is_static && fn->is_inline);
@@ -3226,6 +3403,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
     return tok;
 
   current_fn = fn;
+  gotos = NULL;
+  labels = NULL;
   locals = NULL;
   enter_scope();
   create_param_lvars(ty->params);
@@ -3238,9 +3417,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
 
   fn->params = locals;
 
-  if (ty->is_variadic)
-    fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
-  fn->alloca_bottom = new_lvar("__alloca_size__", pointer_to(ty_char));
+  // if (ty->is_variadic)
+  //   fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
 
   tok = skip(tok, "{");
 
@@ -3256,8 +3434,12 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
 
   fn->body = compound_stmt(&tok, tok);
   fn->locals = locals;
+  fn->gotos = gotos;
+  fn->labels = labels;
   leave_scope();
   resolve_goto_labels();
+  gotos = NULL;
+  labels = NULL;
   return tok;
 }
 
@@ -3265,25 +3447,57 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
   bool first = true;
 
   while (!consume(&tok, tok, ";")) {
-    if (!first)
+    if (!first) {
       tok = skip(tok, ",");
+    }
     first = false;
 
     Type *ty = declarator(&tok, tok, basety);
-    if (!ty->name)
+    if (!ty->name) {
       error_tok(ty->name_pos, "variable name omitted");
+    }
 
-    Obj *var = new_gvar(get_ident(ty->name), ty);
+    char *name = get_ident(ty->name);
+    bool has_initializer = equal(tok, "=");
+    bool is_tentative = !has_initializer && !attr->is_extern && !attr->is_tls;
+
+    // Search globals for a previous definition.
+    Obj *var2 = globals;
+    for (; var2; var2 = var2->next) {
+      if (var2->is_definition && !strcmp(name, var2->name)) {
+        break;
+      }
+    }
+
+    Obj *var = NULL;
+    if (var2) {
+      if (is_tentative) {
+        // Ignore if this is tentative and there is a previous definition.
+        continue;
+      }
+      else if (!var2->is_tentative) {
+        // If both are non-tentative, it is an error.
+        error_tok(ty->name, "redefinition of global var");
+      }
+      // If this is non-tentative, but the previous is tentative, then
+      // the previous definition.
+      var = var2;
+    }
+    else {
+      var = new_gvar(get_ident(ty->name), ty);
+    }
+
+    var->is_tentative = is_tentative;
     var->is_definition = !attr->is_extern;
     var->is_static = attr->is_static;
     var->is_tls = attr->is_tls;
-    if (attr->align)
+    var->is_const = attr->is_const;
+    if (attr->align) {
       var->align = attr->align;
-
-    if (equal(tok, "="))
+    }
+    if (has_initializer) {
       gvar_initializer(&tok, tok->next, var);
-    else if (!attr->is_extern && !attr->is_tls)
-      var->is_tentative = true;
+    }
   }
   return tok;
 }
@@ -3300,43 +3514,41 @@ static bool is_function(Token *tok) {
 }
 
 // Remove redundant tentative definitions.
-static void scan_globals(void) {
-  Obj head;
-  Obj *cur = &head;
+// XXX: nodes still point to the removed tentative Obj structs.
+// static void scan_globals(void) {
+//   Obj head;
+//   Obj *cur = &head;
 
-  for (Obj *var = globals; var; var = var->next) {
-    if (!var->is_tentative) {
-      cur = cur->next = var;
-      continue;
-    }
+//   for (Obj *var = globals; var; var = var->next) {
+//     // Add non-tentative definition
+//     if (!var->is_tentative) {
+//       cur = cur->next = var;
+//       continue;
+//     }
 
-    // Find another definition of the same identifier.
-    Obj *var2 = globals;
-    for (; var2; var2 = var2->next)
-      if (var != var2 && var2->is_definition && !strcmp(var->name, var2->name))
-        break;
+//     // Find another definition of the same identifier.
+//     Obj *var2 = globals;
+//     for (; var2; var2 = var2->next)
+//       if (var != var2 && var2->is_definition && !strcmp(var->name, var2->name))
+//         break;
 
-    // If there's another definition, the tentative definition
-    // is redundant
-    if (!var2)
-      cur = cur->next = var;
-  }
+//     // If there's another definition, the tentative definition
+//     // is redundant, and is not added to the new globals list.
+//     if (var2) {
+      
+//     } else {
+//       cur = cur->next = var;
+//     }
+//   }
 
-  cur->next = NULL;
-  globals = head.next;
-}
-
-static void declare_builtin_functions(void) {
-  Type *ty = func_type(pointer_to(ty_void));
-  ty->params = copy_type(ty_int);
-  builtin_alloca = new_gvar("alloca", ty);
-  builtin_alloca->is_definition = false;
-}
+//   cur->next = NULL;
+//   globals = head.next;
+// }
 
 // program = (typedef | function-definition | global-variable)*
 Obj *parse(Token *tok) {
-  declare_builtin_functions();
   globals = NULL;
+  globals_head = NULL;
 
   while (tok->kind != TK_EOF) {
     VarAttr attr = {};
@@ -3363,6 +3575,6 @@ Obj *parse(Token *tok) {
       mark_live(var);
 
   // Remove redundant tentative definitions.
-  scan_globals();
+  // scan_globals();
   return globals;
 }

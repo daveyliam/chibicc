@@ -168,6 +168,13 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
 //
 // This operation is called the "usual arithmetic conversion".
 static void usual_arith_conv(Node **lhs, Node **rhs) {
+  bool lhs_is_ptr = (*lhs)->ty->base || ((*lhs)->ty->kind == TY_FUNC);
+  bool rhs_is_ptr = (*rhs)->ty->base || ((*rhs)->ty->kind == TY_FUNC);
+  // Don't cast a non-pointer to a pointer.
+  if (lhs_is_ptr ^ rhs_is_ptr) {
+    return;
+  }
+
   Type *ty = get_common_type((*lhs)->ty, (*rhs)->ty);
   *lhs = new_cast(*lhs, ty);
   *rhs = new_cast(*rhs, ty);
@@ -300,8 +307,22 @@ void add_type(Node *node) {
     return;
   case ND_EXCH:
     if (node->lhs->ty->kind != TY_PTR)
-      error_tok(node->cas_addr->tok, "pointer expected");
+      error_tok(node->lhs->tok, "pointer expected");
     node->ty = node->lhs->ty->base;
+    return;
+  case ND_ALLOCA:
+    if (!is_integer(node->args->ty)) {
+      error_tok(node->args->tok, "integer expected");
+    }
+    node->ty = pointer_to(ty_void);
+    return;
+  case ND_VA_START:
+  case ND_VA_COPY:
+  case ND_VA_END:
+    node->ty = ty_void;
+    return;
+  case ND_VA_ARG:
+    node->ty = node->arg_ty;
     return;
   }
 }

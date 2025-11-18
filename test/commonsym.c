@@ -5,7 +5,9 @@ int x = 5;
 int y = 7;
 int y;
 int common_ext1;
-int common_ext2;
+// Original chibicc code did not have an 'extern' here.
+// However both clang and gcc fail to link without it.
+extern int common_ext2;
 static int common_local;
 
 int main() {

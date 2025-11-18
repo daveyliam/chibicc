@@ -18,6 +18,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "llvm-c/Core.h"
+
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
@@ -28,7 +30,7 @@
 typedef struct Type Type;
 typedef struct Node Node;
 typedef struct Member Member;
-typedef struct Relocation Relocation;
+typedef struct GVarInitializer GVarInitializer;
 typedef struct Hideset Hideset;
 
 //
@@ -75,7 +77,7 @@ struct Token {
   TokenKind kind;   // Token kind
   Token *next;      // Next token
   int64_t val;      // If kind is TK_NUM, its value
-  long double fval; // If kind is TK_NUM, its value
+  double fval;      // If kind is TK_NUM, its value
   char *loc;        // Token location
   int len;          // Token length
   Type *ty;         // Used if TK_NUM or TK_STR
@@ -133,7 +135,7 @@ struct Obj {
   int align;     // alignment
 
   // Local variable
-  int offset;
+  LLVMValueRef ir_val;
 
   // Global variable or function
   bool is_function;
@@ -143,17 +145,23 @@ struct Obj {
   // Global variable
   bool is_tentative;
   bool is_tls;
-  char *init_data;
-  Relocation *rel;
+  GVarInitializer *init;
+  // char *init_data;
+  // Relocation *rel;
+
+  // Global or local variable.
+  bool is_const;
 
   // Function
   bool is_inline;
+  bool is_noreturn;
   Obj *params;
   Node *body;
   Obj *locals;
-  Obj *va_area;
-  Obj *alloca_bottom;
+  // Obj *va_area;
   int stack_size;
+  Node *gotos;
+  Node *labels;
 
   // Static inline function
   bool is_live;
@@ -164,13 +172,13 @@ struct Obj {
 // Global variable can be initialized either by a constant expression
 // or a pointer to another global variable. This struct represents the
 // latter.
-typedef struct Relocation Relocation;
-struct Relocation {
-  Relocation *next;
-  int offset;
-  char **label;
-  long addend;
-};
+// typedef struct Relocation Relocation;
+// struct Relocation {
+//   Relocation *next;
+//   int offset;
+//   char **label;
+//   long addend;
+// };
 
 // AST node
 typedef enum {
@@ -207,6 +215,8 @@ typedef enum {
   ND_SWITCH,    // "switch"
   ND_CASE,      // "case"
   ND_BLOCK,     // { ... }
+  ND_BREAK,     // "break"
+  ND_CONTINUE,  // "continue"
   ND_GOTO,      // "goto"
   ND_GOTO_EXPR, // "goto" labels-as-values
   ND_LABEL,     // Labeled statement
@@ -222,6 +232,11 @@ typedef enum {
   ND_ASM,       // "asm"
   ND_CAS,       // Atomic compare-and-swap
   ND_EXCH,      // Atomic exchange
+  ND_ALLOCA,
+  ND_VA_START,
+  ND_VA_COPY,
+  ND_VA_END,
+  ND_VA_ARG,
 } NodeKind;
 
 // AST node type
@@ -254,21 +269,24 @@ struct Node {
   // Function call
   Type *func_ty;
   Node *args;
-  bool pass_by_stack;
+  // bool pass_by_stack;
   Obj *ret_buffer;
 
   // Goto or labeled statement, or labels-as-values
   char *label;
-  char *unique_label;
+  bool goto_resolved;
   Node *goto_next;
+  LLVMBasicBlockRef goto_bb;
 
   // Switch
   Node *case_next;
-  Node *default_case;
 
   // Case
   long begin;
   long end;
+  bool is_default;
+  // LLVMBasicBlockRef case_bb;
+  // LLVMBasicBlockRef case_last_bb;
 
   // "asm" string literal
   char *asm_str;
@@ -282,12 +300,31 @@ struct Node {
   Obj *atomic_addr;
   Node *atomic_expr;
 
+  // va_arg
+  Type *arg_ty;
+
   // Variable
   Obj *var;
 
   // Numeric literal
   int64_t val;
-  long double fval;
+  double fval;
+};
+
+struct GVarInitializer {
+  Type *ty;
+  LLVMTypeRef ir_type;
+  bool ir_type_started;
+  Token *tok;
+
+  double fval;
+  int64_t val;
+  Obj *var;
+
+  // If it's an initializer for an aggregate type (e.g. array or struct),
+  // `children` has initializers for its children.
+  GVarInitializer *children;
+  size_t n_children;
 };
 
 Node *new_cast(Node *expr, Type *ty);
@@ -356,6 +393,10 @@ struct Type {
   Type *params;
   bool is_variadic;
   Type *next;
+
+  // Code gen.
+  bool ir_type_started;
+  LLVMTypeRef ir_type;
 };
 
 // Struct member
@@ -408,7 +449,13 @@ void add_type(Node *node);
 // codegen.c
 //
 
-void codegen(Obj *prog, FILE *out);
+typedef enum {
+  CODEGEN_OUTPUT_OBJECT,
+  CODEGEN_OUTPUT_ASSEMBLY,
+  CODEGEN_OUTPUT_LLVM,
+} CodeGenOutputType;
+
+void codegen(Obj *prog, CodeGenOutputType out_type, FILE *out);
 int align_to(int n, int align);
 
 //

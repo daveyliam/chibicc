@@ -12,7 +12,9 @@ int main() {
 #line 1
   ASSERT(2, __LINE__);
 
-# 200 "xyz" 2 3
+// Clang: error: invalid line marker flag '2': cannot pop empty include stack
+// # 200 "xyz" 2 3
+#line 200 "xyz" 2 3
   ASSERT(201, __LINE__);
   ASSERT(0, strcmp(__FILE__, "xyz"));
 

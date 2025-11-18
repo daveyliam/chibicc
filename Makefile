@@ -1,10 +1,13 @@
-CFLAGS=-std=c11 -g -fno-common -Wall -Wno-switch
+CFLAGS:=-std=c11 -g -fno-common -Wall -Werror -Wno-switch -fPIC
+LDFLAGS:=-lLLVM
 
-SRCS=$(wildcard *.c)
-OBJS=$(SRCS:.c=.o)
+SRCS:=$(wildcard *.c)
+OBJS:=$(SRCS:.c=.o)
 
-TEST_SRCS=$(wildcard test/*.c)
-TESTS=$(TEST_SRCS:.c=.exe)
+TEST_SRCS:=$(filter-out test/common.c, $(wildcard test/*.c))
+TESTS:=$(TEST_SRCS:.c=.exe)
+
+CC:=clang
 
 # Stage 1
 
@@ -13,9 +16,16 @@ chibicc: $(OBJS)
 
 $(OBJS): chibicc.h
 
-test/%.exe: chibicc test/%.c
+test/common.o: test/common.c chibicc
+	./chibicc -Iinclude -Itest -S -emit-llvm -o test/common.ll $<
+	llc test/common.ll
+	./chibicc -Iinclude -Itest -c -o $@ $<
+
+test/%.exe: test/%.c test/common.o chibicc
+	./chibicc -Iinclude -Itest -S -emit-llvm -o test/$*.ll test/$*.c
+	llc test/$*.ll
 	./chibicc -Iinclude -Itest -c -o test/$*.o test/$*.c
-	$(CC) -pthread -o $@ test/$*.o -xc test/common
+	$(CC) -pthread -o $@ test/$*.o test/common.o
 
 test: $(TESTS)
 	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
@@ -44,7 +54,9 @@ test-stage2: $(TESTS:test/%=stage2/test/%)
 # Misc.
 
 clean:
-	rm -rf chibicc tmp* $(TESTS) test/*.s test/*.exe stage2
+	rm -rf \
+		chibicc tmp* $(TESTS) test/*.s test/*.exe test/*.ll \
+		stage2
 	find * -type f '(' -name '*~' -o -name '*.o' ')' -exec rm {} ';'
 
 .PHONY: test clean test-stage2

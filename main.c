@@ -21,10 +21,10 @@ static bool opt_cc1;
 static bool opt_hash_hash_hash;
 static bool opt_static;
 static bool opt_shared;
+static bool opt_emit_llvm;
 static char *opt_MF;
 static char *opt_MT;
 static char *opt_o;
-
 static StringArray ld_extra_args;
 static StringArray std_include_paths;
 
@@ -33,6 +33,8 @@ static char *output_file;
 
 static StringArray input_paths;
 static StringArray tmpfiles;
+
+static void cc1(void);
 
 static void usage(int status) {
   fprintf(stderr, "chibicc [ -o <path> ] <file>\n");
@@ -147,6 +149,11 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-S")) {
       opt_S = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-emit-llvm")) {
+      opt_emit_llvm = true;
       continue;
     }
 
@@ -392,8 +399,9 @@ static void run_subprocess(char **argv) {
   // If -### is given, dump the subprocess's command line.
   if (opt_hash_hash_hash) {
     fprintf(stderr, "%s", argv[0]);
-    for (int i = 1; argv[i]; i++)
+    for (int i = 1; argv[i]; i++) {
       fprintf(stderr, " %s", argv[i]);
+    }
     fprintf(stderr, "\n");
   }
 
@@ -427,6 +435,11 @@ static void run_cc1(int argc, char **argv, char *input, char *output) {
   }
 
   run_subprocess(args);
+
+  // base_file = input;
+  // output_file = output;
+  // add_default_include_paths(argv[0]);
+  // cc1();
 }
 
 // Print tokens to stdout. Used for -E.
@@ -558,7 +571,17 @@ static void cc1(void) {
   FILE *output_buf = open_memstream(&buf, &buflen);
 
   // Traverse the AST to emit assembly.
-  codegen(prog, output_buf);
+  CodeGenOutputType out_type;
+  if (opt_S) {
+    if (opt_emit_llvm) {
+      out_type = CODEGEN_OUTPUT_LLVM;
+    } else {
+      out_type = CODEGEN_OUTPUT_ASSEMBLY;
+    }
+  } else {
+    out_type = CODEGEN_OUTPUT_OBJECT;
+  }
+  codegen(prog, out_type, output_buf);
   fclose(output_buf);
 
   // Write the asembly text to a file.
@@ -770,18 +793,14 @@ int main(int argc, char **argv) {
 
     // Compile and assemble
     if (opt_c) {
-      char *tmp = create_tmpfile();
-      run_cc1(argc, argv, input, tmp);
-      assemble(tmp, output);
+      run_cc1(argc, argv, input, output);
       continue;
     }
 
     // Compile, assemble and link
     char *tmp1 = create_tmpfile();
-    char *tmp2 = create_tmpfile();
     run_cc1(argc, argv, input, tmp1);
-    assemble(tmp1, tmp2);
-    strarray_push(&ld_args, tmp2);
+    strarray_push(&ld_args, tmp1);
     continue;
   }
 

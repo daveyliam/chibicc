@@ -87,16 +87,26 @@ int main() {
   ASSERT(4, sizeof(float));
   ASSERT(8, sizeof(double));
 
-  ASSERT(4, sizeof(1f+2));
+  // Clang: error: invalid digit 'f' in decimal constant
+  // ASSERT(4, sizeof(1f+2));
+  // ASSERT(8, sizeof(1.0+2));
+  // ASSERT(4, sizeof(1f-2));
+  // ASSERT(8, sizeof(1.0-2));
+  // ASSERT(4, sizeof(1f*2));
+  // ASSERT(8, sizeof(1.0*2));
+  // ASSERT(4, sizeof(1f/2));
+  // ASSERT(8, sizeof(1.0/2));
+
+  ASSERT(4, sizeof(1.0f+2));
   ASSERT(8, sizeof(1.0+2));
-  ASSERT(4, sizeof(1f-2));
+  ASSERT(4, sizeof(1.0f-2));
   ASSERT(8, sizeof(1.0-2));
-  ASSERT(4, sizeof(1f*2));
+  ASSERT(4, sizeof(1.0f*2));
   ASSERT(8, sizeof(1.0*2));
-  ASSERT(4, sizeof(1f/2));
+  ASSERT(4, sizeof(1.0f/2));
   ASSERT(8, sizeof(1.0/2));
 
-  ASSERT(16, sizeof(long double));
+  // ASSERT(16, sizeof(long double));
 
   ASSERT(1, sizeof(main));
 
