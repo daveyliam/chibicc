@@ -255,7 +255,7 @@ check -MD
 grep -q -z '^md3.o:.* md3\.c .* ./out3\.h' $tmp/md3.d
 check -MD
 
-$chibicc -c -MD -MF $tmp/md-mf.d -I. $tmp/md2.c
+$chibicc -c -MD -MF $tmp/md-mf.d -I. $tmp/md2.c -o $tmp/md2.o
 grep -q -z '^md2.o:.*md2\.c .*/out2\.h' $tmp/md-mf.d
 check -MD
 
