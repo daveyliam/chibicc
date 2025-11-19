@@ -285,8 +285,6 @@ struct Node {
   long begin;
   long end;
   bool is_default;
-  // LLVMBasicBlockRef case_bb;
-  // LLVMBasicBlockRef case_last_bb;
 
   // "asm" string literal
   char *asm_str;

@@ -5,8 +5,8 @@
 #include "llvm-c/LLJIT.h"
 #include "llvm-c/Support.h"
 #include "llvm-c/Target.h"
+#include "llvm-c/Analysis.h"
 
-static Obj *current_function = NULL;
 static LLVMContextRef current_ir_context = NULL;
 static LLVMModuleRef current_ir_module = NULL;
 static LLVMBuilderRef current_ir_builder = NULL;
@@ -40,11 +40,7 @@ int align_to(int n, int align) {
 
 static bool is_current_bb_terminated(void) {
   LLVMBasicBlockRef bb = LLVMGetInsertBlock(current_ir_builder);
-  LLVMValueRef last_insn = LLVMGetLastInstruction(bb);
-  if (last_insn == NULL) {
-    return false;
-  }
-  return LLVMIsATerminatorInst(last_insn);
+  return LLVMGetBasicBlockTerminator(bb) != NULL;
 }
 
 static LLVMTypeRef get_opaque_ptr_type() {
@@ -181,13 +177,7 @@ static LLVMTypeRef get_llvm_type(Type *ty) {
 }
 
 static LLVMValueRef get_zero_val(Type *ty) {
-  switch (ty->kind) {
-    case TY_PTR:
-    case TY_FUNC:
-      return LLVMConstPointerNull(get_opaque_ptr_type());
-    default:
-      return LLVMConstNull(get_llvm_type(ty));
-  }
+  return LLVMConstNull(get_llvm_type(ty));
 }
 
 static LLVMValueRef gen_is_non_zero(Type *ty, LLVMValueRef val) {
@@ -213,41 +203,11 @@ static LLVMValueRef gen_is_non_zero(Type *ty, LLVMValueRef val) {
     case TY_VLA:
     {
       return LLVMBuildICmp(
-        current_ir_builder, LLVMIntNE, val, LLVMConstPointerNull(get_llvm_type(ty)), ""
+        current_ir_builder, LLVMIntNE, val, get_zero_val(ty), ""
       );
     }
   }
   error("gen_is_non_zero: bad type");
-}
-
-static LLVMValueRef gen_is_zero(Type *ty, LLVMValueRef val) {
-  switch (ty->kind) {
-    case TY_BOOL:
-    case TY_CHAR:
-    case TY_SHORT:
-    case TY_INT:
-    case TY_LONG:
-    case TY_ENUM:
-      return LLVMBuildICmp(
-        current_ir_builder, LLVMIntEQ, val, get_zero_val(ty), ""
-      );
-    case TY_FLOAT:
-    case TY_DOUBLE:
-    case TY_LDOUBLE:
-      return LLVMBuildFCmp(
-        current_ir_builder, LLVMRealOEQ, val, get_zero_val(ty), ""
-      );
-    case TY_PTR:
-    case TY_FUNC:
-    case TY_ARRAY:
-    case TY_VLA:
-    {
-      return LLVMBuildICmp(
-        current_ir_builder, LLVMIntEQ, val, LLVMConstPointerNull(get_llvm_type(ty)), ""
-      );
-    }
-  }
-  error("gen_is_zero: bad type");
 }
 
 // Compute the absolute address of a given node.
@@ -305,6 +265,9 @@ static LLVMValueRef gen_addr(Node *node) {
     }
     break;
   case ND_VLA_PTR:
+    // This node type wraps an ND_VAR node when a VLA is assigned to a local var.
+    // Seems to be used to prevent the var from being loaded as would normally be done to
+    // get the address of the contained VLA.
     return node->var->ir_val;
   }
 
@@ -459,8 +422,6 @@ static LLVMValueRef cast(Type *from, Type *to, LLVMValueRef val) {
 
 // Generate code for a given node.
 static LLVMValueRef gen_expr(Node *node) {
-  // println("  .loc %d %d", node->tok->file->file_no, node->tok->line_no);
-
   switch (node->kind) {
   case ND_NULL_EXPR:
     return NULL;
@@ -560,7 +521,7 @@ static LLVMValueRef gen_expr(Node *node) {
   case ND_CAST:
     return cast(node->lhs->ty, node->ty, gen_expr(node->lhs));
   case ND_MEMZERO:
-    // Node should always be a local var.
+    // Node is always a local var.
     return LLVMBuildMemSet(
       current_ir_builder,
       node->var->ir_val,
@@ -570,6 +531,7 @@ static LLVMValueRef gen_expr(Node *node) {
     );
   case ND_COND: {
     // Ternary expression.
+    // TODO : clang creates an extra alloca for the result rather than using phi.
     LLVMBasicBlockRef then_bb = LLVMAppendBasicBlock(current_ir_function, "");
     LLVMBasicBlockRef else_bb = LLVMAppendBasicBlock(current_ir_function, "");
     LLVMBasicBlockRef end_bb = LLVMAppendBasicBlock(current_ir_function, "");
@@ -604,8 +566,9 @@ static LLVMValueRef gen_expr(Node *node) {
     return phi;
   }
   case ND_NOT: {
-    LLVMValueRef val = gen_is_zero(node->lhs->ty, gen_expr(node->lhs));
-    return LLVMBuildZExt(current_ir_builder, val, get_llvm_type(node->ty), "");
+    LLVMValueRef val1 = gen_is_non_zero(node->lhs->ty, gen_expr(node->lhs));
+    LLVMValueRef val2 = LLVMBuildNot(current_ir_builder, val1, "");
+    return LLVMBuildZExt(current_ir_builder, val2, get_llvm_type(node->ty), "");
   }
   case ND_BITNOT:
     return LLVMBuildNot(current_ir_builder, gen_expr(node->lhs), "");
@@ -1627,7 +1590,6 @@ static void emit_text(Obj *prog) {
       continue;
     }
 
-    current_function = fn;
     current_ir_function = fn->ir_val;
 
     // if (fn->ty->is_variadic) {
@@ -1714,7 +1676,6 @@ static void emit_text(Obj *prog) {
     }
 
     current_ir_function = NULL;
-    current_function = NULL;
   }
 }
 
@@ -1783,6 +1744,12 @@ void codegen(Obj *prog, CodeGenOutputType out_type, FILE *out) {
 
   emit_data(prog);
   emit_text(prog);
+
+  err_msg = NULL;
+  if (LLVMVerifyModule(current_ir_module, LLVMPrintMessageAction, &err_msg)) {
+    // LLVMDisposeMessage(err_msg);
+    error("codegen: verify module error:\n%s", err_msg);
+  }
 
   if (out_type == CODEGEN_OUTPUT_LLVM) {
     char *ir_text = LLVMPrintModuleToString(current_ir_module);
