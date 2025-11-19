@@ -7,6 +7,7 @@ long g6 = 6;
 int g9[3] = {0, 1, 2};
 struct {char a; int b;} g11[2] = {{1, 2}, {3, 4}};
 struct {int a[2];} g12[2] = {{{1, 2}}};
+union { int a; char b[4]; } g13_0 = 0x01020304;
 union { int a; char b[8]; } g13[2] = {0x01020304, 0x05060708};
 char g17[] = "foobar";
 char g18[10] = "foobar";

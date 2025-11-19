@@ -47,6 +47,10 @@ static bool is_current_bb_terminated(void) {
   return LLVMIsATerminatorInst(last_insn);
 }
 
+static LLVMTypeRef get_opaque_ptr_type() {
+  return LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
+}
+
 static LLVMTypeRef get_llvm_type(Type *ty) {
   if (ty->ir_type != NULL) {
     return ty->ir_type;
@@ -90,7 +94,7 @@ static LLVMTypeRef get_llvm_type(Type *ty) {
     // All LLVM pointers are opaque, so just set the element type to void.
     // Also sidesteps recursion issue with struct members referring to the struct type in the
     // type declaration.
-    ty->ir_type = LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
+    ty->ir_type = get_opaque_ptr_type();
     break;
   case TY_FUNC: {
     size_t param_count = 0;
@@ -107,7 +111,7 @@ static LLVMTypeRef get_llvm_type(Type *ty) {
       param_types = calloc(param_count, sizeof(LLVMTypeRef));
       param_count = 0;
       if (returns_large_struct) {
-        param_types[0] = LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
+        param_types[0] = get_opaque_ptr_type();
         param_count += 1;
       }
       for (Type *param_ty = ty->params; param_ty; param_ty = param_ty->next) {
@@ -128,23 +132,24 @@ static LLVMTypeRef get_llvm_type(Type *ty) {
     ty->ir_type = LLVMArrayType(get_llvm_type(ty->base), ty->array_len);
     break;
   case TY_VLA:
-    // TODO : Is this correct? Should be a pointer to an alloca?
-    ty->ir_type = LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
+    // Don't know the size, so need to treat variable length arrays as opaque pointers.
+    ty->ir_type = get_opaque_ptr_type();
     break;
   case TY_STRUCT: {
     size_t element_count = 0;
-    for (Member *member = ty->members; member; member = member->next) {
+    for (Member *m = ty->members; m; m = m->next) {
+      if (m->is_bitfield) {
+        error_tok(m->tok, "struct bitfields not supported");
+      }
       element_count += 1;
     }
     LLVMTypeRef *elements = NULL;
     if (element_count > 0) {
       elements = calloc(element_count, sizeof(LLVMTypeRef));
       element_count = 0;
-      for (Member *member = ty->members; member; member = member->next) {
-        if (member->is_bitfield) {
-          error_tok(member->tok, "struct bitfields not supported");
-        }
-        elements[element_count] = get_llvm_type(member->ty);
+      for (Member *m = ty->members; m; m = m->next) {
+
+        elements[element_count] = get_llvm_type(m->ty);
         element_count += 1;
       }
     }
@@ -153,10 +158,17 @@ static LLVMTypeRef get_llvm_type(Type *ty) {
   }
   case TY_UNION: {
     // In LLVM IR there is no such thing as a union. Unions are emulated by creating a struct that
-    // matches the size of the largest union variant. Then all access to other variants is via
-    // bitcasting.
-    LLVMTypeRef element = LLVMArrayType(LLVMInt8Type(), ty->size);
-    ty->ir_type = LLVMStructType(&element, 1, ty->is_packed);
+    // matches the largest union variant. Then all access to other variants is via bitcasting.
+    size_t size = 0;
+    Member *largest_member = ty->members;
+    for (Member *m = ty->members; m; m = m->next) {
+      if (m->ty->size > size) {
+        size = m->ty->size;
+        largest_member = m;
+      }
+    }
+    LLVMTypeRef mem_ir_type = get_llvm_type(largest_member->ty);
+    ty->ir_type = LLVMStructType(&mem_ir_type, 1, ty->is_packed);
     break;
   }
   default:
@@ -168,154 +180,13 @@ static LLVMTypeRef get_llvm_type(Type *ty) {
   return ty->ir_type;
 }
 
-static LLVMTypeRef get_llvm_init_type(GVarInitializer *ginit) {
-  if (ginit->ir_type != NULL) {
-    return ginit->ir_type;
-  }
-  if (ginit->ir_type_started) {
-    error("recursive type");
-  }
-  ginit->ir_type_started = true;
-  Type *ty = ginit->ty;
-  switch (ty->kind) {
-  case TY_VOID:
-    ginit->ir_type = LLVMVoidType();
-    break;
-  case TY_BOOL:
-    ginit->ir_type = LLVMInt1Type();
-    break;
-  case TY_CHAR:
-    ginit->ir_type = LLVMInt8Type();
-    break;
-  case TY_SHORT:
-    ginit->ir_type = LLVMInt16Type();
-    break;
-  case TY_INT:
-    ginit->ir_type = LLVMInt32Type();
-    break;
-  case TY_LONG:
-    ginit->ir_type = LLVMInt64Type();
-    break;
-  case TY_FLOAT:
-    ginit->ir_type = LLVMFloatType();
-    break;
-  case TY_DOUBLE:
-    ginit->ir_type = LLVMDoubleType();
-    break;
-  case TY_LDOUBLE:
-    ginit->ir_type = LLVMFP128Type();
-    break;
-  case TY_ENUM:
-    ginit->ir_type = LLVMInt32Type();
-    break;
-  case TY_PTR:
-    // All LLVM pointers are opaque, so just set the element type to void.
-    // Also sidesteps recursion issue with struct members referring to the struct type in the
-    // type declaration.
-    ginit->ir_type = LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
-    break;
-  case TY_ARRAY:
-    // TODO : Check if type of all members is the same. If not then use vector.
-    if (ginit->n_children > 0) {
-      ginit->ir_type = LLVMArrayType(get_llvm_init_type(&ginit->children[0]), ty->array_len);
-    } else {
-      ginit->ir_type = LLVMArrayType(get_llvm_type(ty->base), ty->array_len);
-    }
-    break;
-  case TY_STRUCT: {
-    LLVMTypeRef *elements = NULL;
-    if (ginit->n_children > 0) {
-      elements = calloc(ginit->n_children, sizeof(LLVMTypeRef));
-      for (int i = 0; i < ginit->n_children; i++) {
-        elements[i] = get_llvm_init_type(&ginit->children[i]);
-      }
-    }
-    ginit->ir_type = LLVMStructType(elements, ginit->n_children, ty->is_packed);
-    break;
-  }
-  case TY_UNION: {
-    int union_size = ty->size;
-    int init_member_size = ginit->children[0].ty->size;
-    if (init_member_size < union_size) {
-      // Need to add padding if the init member is smaller than the largest
-      // member of the union.
-      LLVMTypeRef element = get_llvm_init_type(&ginit->children[0]);
-      LLVMTypeRef padding = LLVMArrayType(LLVMInt8Type(), union_size - init_member_size);
-      LLVMTypeRef fields[2] = {element, padding};
-      ginit->ir_type = LLVMStructType(fields, 2, ty->is_packed);
-    }
-    else if (init_member_size == union_size) {
-      LLVMTypeRef element = get_llvm_init_type(&ginit->children[0]);
-      ginit->ir_type = LLVMStructType(&element, 1, ty->is_packed);
-    }
-    else {
-      error("get_llvm_init_type: union member size larger than union type size");
-    }
-
-    break;
-  }
-  default:
-    error("get_llvm_init_type: type kind %d unimplemented", ty->kind);
-  }
-  if (ginit->ir_type == NULL) {
-    error("get_llvm_init_type: unreachable");
-  }
-  return ginit->ir_type;
-}
-
-static LLVMValueRef get_int_const(Type *ty, int64_t val) {
-  switch (ty->kind) {
-  case TY_BOOL:
-  case TY_CHAR:
-    return LLVMConstInt(LLVMInt8Type(), val, false);
-  case TY_SHORT:
-    return LLVMConstInt(LLVMInt16Type(), val, false);
-  case TY_INT:
-  case TY_ENUM:
-    return LLVMConstInt(LLVMInt32Type(), val, false);
-  case TY_LONG:
-    return LLVMConstInt(LLVMInt64Type(), val, false);
-  default:
-    error("get_int_const: bad type");
-  }
-}
-
-static LLVMValueRef get_float_const(Type *ty, double fval) {
-  switch (ty->kind) {
-  case TY_FLOAT:
-    return LLVMConstReal(LLVMFloatType(), fval);
-  case TY_DOUBLE:
-    return LLVMConstReal(LLVMDoubleType(), fval);
-  case TY_LDOUBLE:
-    return LLVMConstReal(LLVMFP128Type(), fval);
-  default:
-    error("get_int_const: bad type");
-  }
-}
-
 static LLVMValueRef get_zero_val(Type *ty) {
   switch (ty->kind) {
-    // case TY_BOOL:
-    // case TY_CHAR:
-    // case TY_SHORT:
-    // case TY_INT:
-    // case TY_LONG:
-    // case TY_ENUM:
-    //   return get_int_const(ty, 0);
-    // case TY_FLOAT:
-    // case TY_DOUBLE:
-    // case TY_LDOUBLE:
-    //   return get_float_const(ty, 0.0);
     case TY_PTR:
     case TY_FUNC:
-      return LLVMConstPointerNull(LLVMPointerType(LLVMVoidType(), ADDR_SPACE));
-    // case TY_ARRAY:
-    // case TY_VLA:
-    //   const char *init_data = calloc(ty->size, 1);
-    //   return LLVMConstDataArray(LLVMInt8Type(), init_data, ty->size);
+      return LLVMConstPointerNull(get_opaque_ptr_type());
     default:
       return LLVMConstNull(get_llvm_type(ty));
-      // error("unable to get zero value for type kind %d", ty->kind);
   }
 }
 
@@ -328,13 +199,13 @@ static LLVMValueRef gen_is_non_zero(Type *ty, LLVMValueRef val) {
     case TY_LONG:
     case TY_ENUM:
       return LLVMBuildICmp(
-        current_ir_builder, LLVMIntNE, val, get_int_const(ty, 0), ""
+        current_ir_builder, LLVMIntNE, val, get_zero_val(ty), ""
       );
     case TY_FLOAT:
     case TY_DOUBLE:
     case TY_LDOUBLE:
       return LLVMBuildFCmp(
-        current_ir_builder, LLVMRealUNE, val, get_float_const(ty, 0.0), ""
+        current_ir_builder, LLVMRealUNE, val, get_zero_val(ty), ""
       );
     case TY_PTR:
     case TY_FUNC:
@@ -358,13 +229,13 @@ static LLVMValueRef gen_is_zero(Type *ty, LLVMValueRef val) {
     case TY_LONG:
     case TY_ENUM:
       return LLVMBuildICmp(
-        current_ir_builder, LLVMIntEQ, val, get_int_const(ty, 0), ""
+        current_ir_builder, LLVMIntEQ, val, get_zero_val(ty), ""
       );
     case TY_FLOAT:
     case TY_DOUBLE:
     case TY_LDOUBLE:
       return LLVMBuildFCmp(
-        current_ir_builder, LLVMRealOEQ, val, get_float_const(ty, 0.0), ""
+        current_ir_builder, LLVMRealOEQ, val, get_zero_val(ty), ""
       );
     case TY_PTR:
     case TY_FUNC:
@@ -598,14 +469,14 @@ static LLVMValueRef gen_expr(Node *node) {
     case TY_FLOAT:
     case TY_DOUBLE:
     case TY_LDOUBLE:
-      return get_float_const(node->ty, node->fval);
+      return LLVMConstReal(get_llvm_type(node->ty), node->fval);
     case TY_BOOL:
     case TY_CHAR:
     case TY_SHORT:
     case TY_INT:
     case TY_LONG:
     case TY_ENUM:
-      return get_int_const(node->ty, node->val);
+      return LLVMConstInt(get_llvm_type(node->ty), node->val, false);
     default:
       break;
     }
@@ -722,7 +593,7 @@ static LLVMValueRef gen_expr(Node *node) {
       // TODO : is this correct?
       LLVMTypeRef result_ty;
       if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) {
-        result_ty = LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
+        result_ty = get_opaque_ptr_type();
       } else {
         result_ty = get_llvm_type(node->ty);
       }
@@ -1341,18 +1212,20 @@ static LLVMValueRef gen_stmt(Node *node) {
     LLVMBuildBr(current_ir_builder, case_bb);
 
     long dist = node->end + 1 - node->begin;
+    LLVMTypeRef cond_ir_type = get_llvm_type(current_switch_cond_ty);
     if (!node->is_default) {
       if (dist <= 32) {
         for (long x = node->begin; x <= node->end; x++) {
-          LLVMAddCase(current_switch_insn, get_int_const(current_switch_cond_ty, x), case_bb);
+          LLVMValueRef case_val = LLVMConstInt(cond_ir_type, x, false);
+          LLVMAddCase(current_switch_insn, case_val, case_bb);
         }
       }
       else {
         // Large case range. Need to add check and branch to the 'extra cases' basic block.
         LLVMPositionBuilderAtEnd(current_ir_builder, current_switch_extra_bb);
         LLVMBasicBlockRef next_range_bb = LLVMAppendBasicBlock(current_ir_function, "");
-        LLVMValueRef begin_val = get_int_const(current_switch_cond_ty, node->begin);
-        LLVMValueRef end_val = get_int_const(current_switch_cond_ty, node->end);
+        LLVMValueRef begin_val = LLVMConstInt(cond_ir_type, node->begin, false);
+        LLVMValueRef end_val = LLVMConstInt(cond_ir_type, node->end, false);
         LLVMValueRef is_in_range_val;
         if (current_switch_cond_ty->is_unsigned) {
           is_in_range_val = LLVMBuildAnd(
@@ -1469,6 +1342,77 @@ static LLVMValueRef gen_stmt(Node *node) {
   error_tok(node->tok, "invalid statement");
 }
 
+static LLVMTypeRef get_gvar_init_ir_type(GVarInitializer *ginit) {
+  if (ginit->ir_type != NULL) {
+    return ginit->ir_type;
+  }
+  if (ginit->ir_type_started) {
+    error("recursive type");
+  }
+  ginit->ir_type_started = true;
+  Type *ty = ginit->ty;
+  switch (ty->kind) {
+  case TY_VOID:
+  case TY_BOOL:
+  case TY_CHAR:
+  case TY_SHORT:
+  case TY_INT:
+  case TY_LONG:
+  case TY_FLOAT:
+  case TY_DOUBLE:
+  case TY_LDOUBLE:
+  case TY_ENUM:
+  case TY_PTR:
+    ginit->ir_type = get_llvm_type(ty);
+    break;
+  case TY_ARRAY:
+    // TODO : Check if type of all members is the same. If not then use vector.
+    if (ginit->n_children > 0) {
+      ginit->ir_type = LLVMArrayType(get_gvar_init_ir_type(&ginit->children[0]), ty->array_len);
+    } else {
+      ginit->ir_type = LLVMArrayType(get_llvm_type(ty->base), ty->array_len);
+    }
+    break;
+  case TY_STRUCT: {
+    LLVMTypeRef *elements = NULL;
+    if (ginit->n_children > 0) {
+      elements = calloc(ginit->n_children, sizeof(LLVMTypeRef));
+      for (int i = 0; i < ginit->n_children; i++) {
+        elements[i] = get_gvar_init_ir_type(&ginit->children[i]);
+      }
+    }
+    ginit->ir_type = LLVMStructType(elements, ginit->n_children, ty->is_packed);
+    break;
+  }
+  case TY_UNION: {
+    int union_size = ty->size;
+    int init_member_size = ginit->children[0].ty->size;
+    if (init_member_size < union_size) {
+      // Need to add padding if the init member is smaller than the largest
+      // member of the union.
+      LLVMTypeRef element = get_gvar_init_ir_type(&ginit->children[0]);
+      LLVMTypeRef padding = LLVMArrayType(LLVMInt8Type(), union_size - init_member_size);
+      LLVMTypeRef fields[2] = {element, padding};
+      ginit->ir_type = LLVMStructType(fields, 2, ty->is_packed);
+    }
+    else if (init_member_size == union_size) {
+      LLVMTypeRef element = get_gvar_init_ir_type(&ginit->children[0]);
+      ginit->ir_type = LLVMStructType(&element, 1, ty->is_packed);
+    }
+    else {
+      error("get_gvar_init_ir_type: union member size larger than union type size");
+    }
+    break;
+  }
+  default:
+    error("get_gvar_init_ir_type: type kind %d unimplemented", ty->kind);
+  }
+  if (ginit->ir_type == NULL) {
+    error("get_gvar_init_ir_type: unreachable");
+  }
+  return ginit->ir_type;
+}
+
 static LLVMValueRef get_gvar_init_val(GVarInitializer *ginit) {
   switch (ginit->ty->kind) {
   case TY_BOOL:
@@ -1495,14 +1439,14 @@ static LLVMValueRef get_gvar_init_val(GVarInitializer *ginit) {
       } else {
         ptr = ginit->var->ir_val;
       }
-      return LLVMConstPtrToInt(ptr, get_llvm_init_type(ginit));
+      return LLVMConstPtrToInt(ptr, get_llvm_type(ginit->ty));
     }
-    return get_int_const(ginit->ty, ginit->val);
+    return LLVMConstInt(get_llvm_type(ginit->ty), ginit->val, false);
   }
   case TY_FLOAT:
   case TY_DOUBLE:
   case TY_LDOUBLE:
-    return get_float_const(ginit->ty, ginit->fval);
+    return LLVMConstReal(get_llvm_type(ginit->ty), ginit->fval);
   case TY_PTR:
     if (ginit->var) {
       if (!ginit->var->ir_val) {
@@ -1518,7 +1462,7 @@ static LLVMValueRef get_gvar_init_val(GVarInitializer *ginit) {
     }
     return LLVMConstIntToPtr(
       LLVMConstInt(LLVMInt64Type(), ginit->val, false),
-      get_llvm_init_type(ginit)
+      get_opaque_ptr_type()
     );
   case TY_ARRAY: {
     LLVMValueRef *vals = calloc(ginit->n_children, sizeof(LLVMValueRef));
@@ -1530,7 +1474,7 @@ static LLVMValueRef get_gvar_init_val(GVarInitializer *ginit) {
     //   e.g. for array of unions with different variants for some elements.
     LLVMTypeRef base_ir_type;
     if (ginit->n_children > 0) {
-      base_ir_type = get_llvm_init_type(&ginit->children[0]);
+      base_ir_type = get_gvar_init_ir_type(&ginit->children[0]);
     } else {
       base_ir_type = get_llvm_type(ginit->ty->base);
     }
@@ -1575,7 +1519,7 @@ static LLVMValueRef get_gvar_init_val(GVarInitializer *ginit) {
     for (size_t i = 0; i < ginit->n_children; i++) {
       vals[i] = get_gvar_init_val(&ginit->children[i]);
     }
-    return LLVMConstNamedStruct(get_llvm_init_type(ginit), vals, ginit->n_children);
+    return LLVMConstNamedStruct(get_gvar_init_ir_type(ginit), vals, ginit->n_children);
   }
   default:
     error_tok(ginit->tok, "bad init data for type %d", ginit->ty->kind);
@@ -1601,7 +1545,7 @@ static void emit_data(Obj *prog) {
     // If not a function, must be a global variable.
     LLVMTypeRef ir_type;
     if (var->init) {
-      ir_type = get_llvm_init_type(var->init);
+      ir_type = get_gvar_init_ir_type(var->init);
     } else {
       ir_type = get_llvm_type(var->ty);
     }
@@ -1650,7 +1594,7 @@ static void emit_data(Obj *prog) {
   }
 
   // Declare LLVM builtins.
-  LLVMTypeRef void_ptr_ty = LLVMPointerType(LLVMVoidType(), ADDR_SPACE);
+  LLVMTypeRef void_ptr_ty = get_opaque_ptr_type();
   LLVMTypeRef va_copy_arg_types[2] = {void_ptr_ty, void_ptr_ty}; 
   builtin_va_start_ir_type = LLVMFunctionType(LLVMVoidType(), &void_ptr_ty, 1, false);
   builtin_va_copy_ir_type = LLVMFunctionType(LLVMVoidType(), va_copy_arg_types, 2, false);
@@ -1716,7 +1660,7 @@ static void emit_text(Obj *prog) {
 
     LLVMBasicBlockRef last_bb = LLVMGetInsertBlock(current_ir_builder);
 
-    // Add branches to the end of goto basic blocks now that basic blocks for
+    // Add branches to the end of goto basic blocks now that the basic blocks for
     // all labels have been created.
     for (Node *goto_nd = fn->gotos; goto_nd; goto_nd = goto_nd->goto_next) {
       for (Node *label_nd = fn->labels; label_nd; label_nd = label_nd->goto_next) {
@@ -1733,7 +1677,6 @@ static void emit_text(Obj *prog) {
 
     // Need to add a return if there wasn't one.
     // TODO : remove the current BB rather than adding a return if it is unreachable.
-    // XXX : this code needs to account for returning a large struct.
     if (!is_current_bb_terminated()) {
       Type *return_ty = fn->ty->return_ty;
       bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);

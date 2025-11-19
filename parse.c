@@ -1494,6 +1494,9 @@ build_gvar_init(GVarInitializer *ginit, Initializer *init) {
   ginit->ty = init->ty;
   ginit->tok = init->tok;
 
+  // TODO : Need to create new types for arrays and structs in case one of the
+  // child elements is a union?
+
   if (init->ty->kind == TY_ARRAY) {
     ginit->n_children = init->ty->array_len;
     ginit->children = calloc(ginit->n_children, sizeof(GVarInitializer));
@@ -1541,8 +1544,6 @@ build_gvar_init(GVarInitializer *ginit, Initializer *init) {
       // new_initializer(). 
       child_init = init->children[0];
     }
-  
-    ginit->ty = init->ty;
     ginit->n_children = 1;
     ginit->children = calloc(1, sizeof(GVarInitializer));
     build_gvar_init(ginit->children, child_init);
@@ -1553,7 +1554,7 @@ build_gvar_init(GVarInitializer *ginit, Initializer *init) {
     return;
   }
 
-  if (init->ty->kind == TY_FLOAT || init->ty->kind == TY_DOUBLE) {
+  if (init->ty->kind == TY_FLOAT || init->ty->kind == TY_DOUBLE || init->ty->kind == TY_LDOUBLE) {
     ginit->fval = eval_double(init->expr);
     return;
   }
@@ -2137,7 +2138,6 @@ static double eval_double(Node *node) {
   case ND_MUL:
     return eval_double(node->lhs) * eval_double(node->rhs);
   case ND_DIV:
-    fprintf(stderr, "eval_double div %f %f\n", eval_double(node->lhs), eval_double(node->rhs));
     return eval_double(node->lhs) / eval_double(node->rhs);
   case ND_NEG:
     return -eval_double(node->lhs);
@@ -2506,7 +2506,11 @@ static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
   }
 
   // ptr + num
-  return new_binary(ND_ADD, lhs, rhs, tok);
+  if (lhs->ty->base && is_integer(rhs->ty)) {
+    return new_binary(ND_ADD, lhs, rhs, tok);
+  }
+
+  error_tok(tok, "invalid operands");
 }
 
 // Like `+`, `-` is overloaded for the pointer type.
@@ -2518,11 +2522,15 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
   if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
     return new_binary(ND_SUB, lhs, rhs, tok);
 
+  // VLA - num
+  if (lhs->ty->base->kind == TY_VLA) {
+    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
+    return new_binary(ND_SUB, lhs, rhs, tok);
+  }
+
   // ptr - num
   if (lhs->ty->base && is_integer(rhs->ty)) {
-    Node *node = new_binary(ND_SUB, lhs, rhs, tok);
-    node->ty = lhs->ty;
-    return node;
+    return new_binary(ND_SUB, lhs, rhs, tok);
   }
 
   // ptr - ptr, which returns how many elements are between the two.
