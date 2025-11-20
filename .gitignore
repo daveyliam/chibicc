@@ -1,11 +1,5 @@
-**/*~
-**/\#*
-**/*.o
-**/*.ll
-**/*.s
-**/a.out
+/build
 /tmp*
 /thirdparty
 /chibicc
-/test/*.exe
 /stage2

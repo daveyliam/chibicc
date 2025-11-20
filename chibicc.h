@@ -169,17 +169,6 @@ struct Obj {
   StringArray refs;
 };
 
-// Global variable can be initialized either by a constant expression
-// or a pointer to another global variable. This struct represents the
-// latter.
-// typedef struct Relocation Relocation;
-// struct Relocation {
-//   Relocation *next;
-//   int offset;
-//   char **label;
-//   long addend;
-// };
-
 // AST node
 typedef enum {
   ND_NULL_EXPR, // Do nothing
@@ -256,10 +245,6 @@ struct Node {
   Node *init;
   Node *inc;
 
-  // "break" and "continue" labels
-  char *brk_label;
-  char *cont_label;
-
   // Block or statement expression
   Node *body;
 
@@ -274,7 +259,6 @@ struct Node {
 
   // Goto or labeled statement, or labels-as-values
   char *label;
-  bool goto_resolved;
   Node *goto_next;
   LLVMBasicBlockRef goto_bb;
 

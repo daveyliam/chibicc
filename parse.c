@@ -101,9 +101,10 @@ static Obj *current_fn;
 static Node *gotos;
 static Node *labels;
 
-// Current "goto" and "continue" jump targets.
-static char *brk_label;
-static char *cont_label;
+// Whether break or continue statements can be used in the current
+// context.
+static bool is_break_valid;
+static bool is_cont_valid;
 
 // Points to a node representing a switch if we are parsing
 // a switch statement. Otherwise, NULL.
@@ -434,6 +435,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
   // For example, bits 0 and 1 represents how many times we saw the
   // keyword "void" so far. With this, we can use a switch statement
   // as you can see below.
+  // Note the counter buckets can overflow. However this is prevented
+  // by the 'switch (counter)' below being run after each token.
+  // So 'char char char char' would be recognized as an invalid type
+  // as soon as the second 'char' is parsed.
   enum {
     VOID     = 1 << 0,
     BOOL     = 1 << 2,
@@ -690,7 +695,9 @@ static Type *func_params(Token **rest, Token *tok, Type *ty) {
     cur = cur->next = copy_type(ty2);
   }
 
-  // XXX : variadic if param list is empty?
+  // TODO : functions without a prototype can take an unspecified number
+  // of arguments, howver this is deprecated in all C versions, and
+  // unsupported C23.
   // if (cur == &head) {
   //   is_variadic = true;
   // }
@@ -1678,13 +1685,13 @@ static Node *stmt(Token **rest, Token *tok) {
     Node *sw = current_switch;
     current_switch = node;
 
-    char *brk = brk_label;
-    brk_label = node->brk_label = new_unique_name();
+    bool prev_is_break_valid = is_break_valid;
+    is_break_valid = true;
 
     node->then = stmt(rest, tok);
 
     current_switch = sw;
-    brk_label = brk;
+    is_break_valid = prev_is_break_valid;
     return node;
   }
 
@@ -1735,10 +1742,10 @@ static Node *stmt(Token **rest, Token *tok) {
 
     enter_scope();
 
-    char *brk = brk_label;
-    char *cont = cont_label;
-    brk_label = node->brk_label = new_unique_name();
-    cont_label = node->cont_label = new_unique_name();
+    bool prev_is_break_valid = is_break_valid;
+    bool prev_is_cont_valid = is_cont_valid;
+    is_break_valid = true;
+    is_cont_valid = true;
 
     if (is_typename(tok)) {
       Type *basety = declspec(&tok, tok, NULL);
@@ -1758,8 +1765,8 @@ static Node *stmt(Token **rest, Token *tok) {
     node->then = stmt(rest, tok);
 
     leave_scope();
-    brk_label = brk;
-    cont_label = cont;
+    is_break_valid = prev_is_break_valid;
+    is_cont_valid = prev_is_cont_valid;
     return node;
   }
 
@@ -1769,30 +1776,30 @@ static Node *stmt(Token **rest, Token *tok) {
     node->cond = expr(&tok, tok);
     tok = skip(tok, ")");
 
-    char *brk = brk_label;
-    char *cont = cont_label;
-    brk_label = node->brk_label = new_unique_name();
-    cont_label = node->cont_label = new_unique_name();
+    bool prev_is_break_valid = is_break_valid;
+    bool prev_is_cont_valid = is_cont_valid;
+    is_break_valid = true;
+    is_cont_valid = true;
 
     node->then = stmt(rest, tok);
 
-    brk_label = brk;
-    cont_label = cont;
+    is_break_valid = prev_is_break_valid;
+    is_cont_valid = prev_is_cont_valid;
     return node;
   }
 
   if (equal(tok, "do")) {
     Node *node = new_node(ND_DO, tok);
 
-    char *brk = brk_label;
-    char *cont = cont_label;
-    brk_label = node->brk_label = new_unique_name();
-    cont_label = node->cont_label = new_unique_name();
+    bool prev_is_break_valid = is_break_valid;
+    bool prev_is_cont_valid = is_cont_valid;
+    is_break_valid = true;
+    is_cont_valid = true;
 
     node->then = stmt(&tok, tok->next);
 
-    brk_label = brk;
-    cont_label = cont;
+    is_break_valid = prev_is_break_valid;
+    is_cont_valid = prev_is_cont_valid;
 
     tok = skip(tok, "while");
     tok = skip(tok, "(");
@@ -1823,19 +1830,17 @@ static Node *stmt(Token **rest, Token *tok) {
   }
 
   if (equal(tok, "break")) {
-    if (!brk_label)
+    if (!is_break_valid)
       error_tok(tok, "stray break");
     Node *node = new_node(ND_BREAK, tok);
-    // node->unique_label = brk_label;
     *rest = skip(tok->next, ";");
     return node;
   }
 
   if (equal(tok, "continue")) {
-    if (!cont_label)
+    if (!is_cont_valid)
       error_tok(tok, "stray continue");
     Node *node = new_node(ND_CONTINUE, tok);
-    // node->unique_label = cont_label;
     *rest = skip(tok->next, ";");
     return node;
   }
@@ -1843,7 +1848,6 @@ static Node *stmt(Token **rest, Token *tok) {
   if (tok->kind == TK_IDENT && equal(tok->next, ":")) {
     Node *node = new_node(ND_LABEL, tok);
     node->label = strndup(tok->loc, tok->len);
-    // node->unique_label = new_unique_name();
     node->lhs = stmt(rest, tok->next->next);
     node->goto_next = labels;
     labels = node;
@@ -2227,8 +2231,6 @@ static Node *to_assign(Node *binary) {
                 tok);
 
     Node *loop = new_node(ND_DO, tok);
-    loop->brk_label = new_unique_name();
-    loop->cont_label = new_unique_name();
 
     Node *body = new_binary(ND_ASSIGN,
                             new_var_node(new, tok),
@@ -3343,15 +3345,15 @@ static void create_param_lvars(Type *param) {
 // So, we need to do this after we parse the entire function.
 static void resolve_goto_labels(void) {
   for (Node *x = gotos; x; x = x->goto_next) {
+    bool goto_resolved = false;
     for (Node *y = labels; y; y = y->goto_next) {
       if (!strcmp(x->label, y->label)) {
-        // x->unique_label = y->unique_label;
-        x->goto_resolved = true;
+        goto_resolved = true;
         break;
       }
     }
 
-    if (!x->goto_resolved) {
+    if (!goto_resolved) {
       error_tok(x->tok->next, "use of undeclared label");
     }
   }
@@ -3521,38 +3523,6 @@ static bool is_function(Token *tok) {
   return ty->kind == TY_FUNC;
 }
 
-// Remove redundant tentative definitions.
-// XXX: nodes still point to the removed tentative Obj structs.
-// static void scan_globals(void) {
-//   Obj head;
-//   Obj *cur = &head;
-
-//   for (Obj *var = globals; var; var = var->next) {
-//     // Add non-tentative definition
-//     if (!var->is_tentative) {
-//       cur = cur->next = var;
-//       continue;
-//     }
-
-//     // Find another definition of the same identifier.
-//     Obj *var2 = globals;
-//     for (; var2; var2 = var2->next)
-//       if (var != var2 && var2->is_definition && !strcmp(var->name, var2->name))
-//         break;
-
-//     // If there's another definition, the tentative definition
-//     // is redundant, and is not added to the new globals list.
-//     if (var2) {
-      
-//     } else {
-//       cur = cur->next = var;
-//     }
-//   }
-
-//   cur->next = NULL;
-//   globals = head.next;
-// }
-
 // program = (typedef | function-definition | global-variable)*
 Obj *parse(Token *tok) {
   globals = NULL;
@@ -3582,7 +3552,5 @@ Obj *parse(Token *tok) {
     if (var->is_root)
       mark_live(var);
 
-  // Remove redundant tentative definitions.
-  // scan_globals();
   return globals;
 }

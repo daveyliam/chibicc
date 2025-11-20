@@ -14,11 +14,21 @@ static LLVMValueRef current_ir_function = NULL;
 
 static LLVMBasicBlockRef current_break_bb = NULL;
 static LLVMBasicBlockRef current_continue_bb = NULL;
-static LLVMValueRef current_switch_insn = NULL;
-static LLVMBasicBlockRef current_switch_default_bb = NULL;
-static LLVMBasicBlockRef current_switch_extra_bb = NULL;
-static Type *current_switch_cond_ty = NULL;
-static LLVMValueRef current_switch_cond_val = NULL;
+
+struct SwitchContext {
+  LLVMValueRef insn;
+  LLVMBasicBlockRef default_bb;
+  LLVMBasicBlockRef extra_bb;
+  Type *cond_ty;
+  LLVMValueRef cond_val;
+};
+static struct SwitchContext current_switch_ctx = {};
+
+// static LLVMValueRef current_switch_insn = NULL;
+// static LLVMBasicBlockRef current_switch_default_bb = NULL;
+// static LLVMBasicBlockRef current_switch_extra_bb = NULL;
+// static Type *current_switch_cond_ty = NULL;
+// static LLVMValueRef current_switch_cond_val = NULL;
 
 static LLVMValueRef builtin_va_start_ir_val = NULL;
 static LLVMValueRef builtin_va_copy_ir_val = NULL;
@@ -278,9 +288,6 @@ static LLVMValueRef gen_addr(Node *node) {
 static LLVMValueRef load(Type *ty, LLVMValueRef addr) {
   switch (ty->kind) {
   case TY_ARRAY:
-  // XXX : causes issues passing structs by value in ND_FUNCALL.
-  // But without causes issues in ND_ASSIGN (e.g. (struct1=struct2).x).
-  // How to resolve? Add loads where necessary around function calls and returns?
   case TY_STRUCT:
   case TY_UNION:
   case TY_FUNC:
@@ -297,7 +304,7 @@ static LLVMValueRef load(Type *ty, LLVMValueRef addr) {
 }
 
 static void store(Type *ty, LLVMValueRef addr, LLVMValueRef val) {
-  // TODO : does this work for structs and arrays? Or do we need to memcpy?
+  // TODO : Does it make any difference doing a memcpy here for large structs?
   LLVMBuildStore(current_ir_builder, val, addr);
 }
 
@@ -656,8 +663,8 @@ static LLVMValueRef gen_expr(Node *node) {
     }
   
     // Build call.
-    // XXX : what is the type here for? should be type of result? but replacing with node->ty
-    // causes failures.
+    // Function type is needed rather than just the return type in case it is varargs.
+    // For non-vararg functions the final IR will only include the return type.
     LLVMValueRef ret = LLVMBuildCall2(
       current_ir_builder, get_llvm_type(node->func_ty), func_val, arg_vals, arg_count, ""
     );
@@ -1120,16 +1127,13 @@ static LLVMValueRef gen_stmt(Node *node) {
 
     LLVMBasicBlockRef prev_break_bb = current_break_bb;
     current_break_bb = end_bb;
-    LLVMValueRef prev_switch_insn = current_switch_insn;
-    current_switch_insn = switch_insn;
-    LLVMBasicBlockRef prev_switch_default_bb = current_switch_default_bb;
-    current_switch_default_bb = default_bb;
-    LLVMBasicBlockRef prev_switch_extra_bb = current_switch_extra_bb;
-    current_switch_extra_bb = extra_cases_bb;
-    Type *prev_switch_cond_ty = current_switch_cond_ty;
-    current_switch_cond_ty = node->cond->ty;
-    LLVMValueRef prev_switch_cond_val = current_switch_cond_val;
-    current_switch_cond_val = cond_val;
+
+    struct SwitchContext prev_switch_ctx = current_switch_ctx;
+    current_switch_ctx.insn = switch_insn;
+    current_switch_ctx.default_bb = default_bb;
+    current_switch_ctx.extra_bb = extra_cases_bb;
+    current_switch_ctx.cond_ty = node->cond->ty;
+    current_switch_ctx.cond_val = cond_val;
 
     // Generate code for switch body.
     // Includes case labels and all case bodies.
@@ -1140,10 +1144,10 @@ static LLVMValueRef gen_stmt(Node *node) {
       LLVMBuildBr(current_ir_builder, end_bb);
     }
 
-    // The switch body updates current_switch_extra_bb when it adds comparisons
+    // The switch body updates current_switch_ctx.extra_bb when it adds comparisons
     // for large case ranges. Need to add a branch to the default block if none of
     // the extra cases match.
-    LLVMPositionBuilderAtEnd(current_ir_builder, current_switch_extra_bb);
+    LLVMPositionBuilderAtEnd(current_ir_builder, current_switch_ctx.extra_bb);
     if (!is_current_bb_terminated()) {
       LLVMBuildBr(current_ir_builder, default_bb);
     }
@@ -1155,58 +1159,57 @@ static LLVMValueRef gen_stmt(Node *node) {
     }
 
     current_break_bb = prev_break_bb;
-    current_switch_insn = prev_switch_insn;
-    current_switch_default_bb = prev_switch_default_bb;
-    current_switch_extra_bb = prev_switch_extra_bb;
-    current_switch_cond_ty = prev_switch_cond_ty;
-    current_switch_cond_val = prev_switch_cond_val;
+    current_switch_ctx = prev_switch_ctx;
+
     LLVMPositionBuilderAtEnd(current_ir_builder, end_bb);
 
     return NULL;
   }
   case ND_CASE: {
-    // TODO : Can we move the case BBs closer to the switch
+    // TODO : Can we move the case BBs closer to the switch?
     LLVMBasicBlockRef case_bb;
     if (node->is_default) {
-      case_bb = current_switch_default_bb;
+      case_bb = current_switch_ctx.default_bb;
     } else {
       case_bb = LLVMAppendBasicBlock(current_ir_function, "");
     }
     LLVMBuildBr(current_ir_builder, case_bb);
 
     long dist = node->end + 1 - node->begin;
-    LLVMTypeRef cond_ir_type = get_llvm_type(current_switch_cond_ty);
+    LLVMTypeRef cond_ir_type = get_llvm_type(current_switch_ctx.cond_ty);
     if (!node->is_default) {
       if (dist <= 32) {
         for (long x = node->begin; x <= node->end; x++) {
           LLVMValueRef case_val = LLVMConstInt(cond_ir_type, x, false);
-          LLVMAddCase(current_switch_insn, case_val, case_bb);
+          LLVMAddCase(current_switch_ctx.insn, case_val, case_bb);
         }
       }
       else {
         // Large case range. Need to add check and branch to the 'extra cases' basic block.
-        LLVMPositionBuilderAtEnd(current_ir_builder, current_switch_extra_bb);
+        LLVMPositionBuilderAtEnd(current_ir_builder, current_switch_ctx.extra_bb);
         LLVMBasicBlockRef next_range_bb = LLVMAppendBasicBlock(current_ir_function, "");
         LLVMValueRef begin_val = LLVMConstInt(cond_ir_type, node->begin, false);
         LLVMValueRef end_val = LLVMConstInt(cond_ir_type, node->end, false);
-        LLVMValueRef is_in_range_val;
-        if (current_switch_cond_ty->is_unsigned) {
-          is_in_range_val = LLVMBuildAnd(
-            current_ir_builder,
-            LLVMBuildICmp(current_ir_builder, LLVMIntUGE, current_switch_cond_val, begin_val, ""),
-            LLVMBuildICmp(current_ir_builder, LLVMIntULE, current_switch_cond_val, end_val, ""),
-            ""
-          );
+        LLVMIntPredicate cmp_op1, cmp_op2;
+        if (current_switch_ctx.cond_ty->is_unsigned) {
+          cmp_op1 = LLVMIntUGE;
+          cmp_op2 = LLVMIntULE;
         } else {
-          is_in_range_val = LLVMBuildAnd(
+          cmp_op1 = LLVMIntSGE;
+          cmp_op2 = LLVMIntSLE;
+        }
+        LLVMValueRef is_in_range_val = LLVMBuildAnd(
             current_ir_builder,
-            LLVMBuildICmp(current_ir_builder, LLVMIntSGE, current_switch_cond_val, begin_val, ""),
-            LLVMBuildICmp(current_ir_builder, LLVMIntSLE, current_switch_cond_val, end_val, ""),
+            LLVMBuildICmp(
+              current_ir_builder, cmp_op1, current_switch_ctx.cond_val, begin_val, ""
+            ),
+            LLVMBuildICmp(
+              current_ir_builder, cmp_op2, current_switch_ctx.cond_val, end_val, ""
+            ),
             ""
           );
-        }
         LLVMBuildCondBr(current_ir_builder, is_in_range_val, case_bb, next_range_bb);
-        current_switch_extra_bb = next_range_bb;
+        current_switch_ctx.extra_bb = next_range_bb;
       }
     }
 
@@ -1704,8 +1707,8 @@ void codegen(Obj *prog, CodeGenOutputType out_type, FILE *out) {
   LLVMTargetMachineOptionsRef opts = LLVMCreateTargetMachineOptions();
   LLVMTargetMachineOptionsSetCPU(opts, LLVMGetHostCPUName());
   LLVMTargetMachineOptionsSetFeatures(opts, LLVMGetHostCPUFeatures());
-  LLVMTargetMachineOptionsSetCodeGenOptLevel(opts, LLVMCodeGenLevelNone);
-  // LLVMTargetMachineOptionsSetCodeGenOptLevel(opts, LLVMCodeGenLevelDefault);
+  // LLVMTargetMachineOptionsSetCodeGenOptLevel(opts, LLVMCodeGenLevelNone);
+  LLVMTargetMachineOptionsSetCodeGenOptLevel(opts, LLVMCodeGenLevelDefault);
   LLVMTargetMachineOptionsSetCodeModel(opts, LLVMCodeModelDefault);
   // LLVMTargetMachineOptionsSetCodeModel(opts, LLVMCodeModelJITDefault);
   LLVMTargetMachineOptionsSetRelocMode(opts, LLVMRelocPIC);
