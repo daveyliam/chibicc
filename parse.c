@@ -1079,6 +1079,7 @@ static Member *struct_designator(Token **rest, Token *tok, Type *ty) {
 
   for (Member *mem = ty->members; mem; mem = mem->next) {
     // Anonymous struct member
+    // 
     if (mem->ty->kind == TY_STRUCT && !mem->name) {
       if (get_struct_member(mem->ty, tok)) {
         *rest = start;
@@ -2870,6 +2871,8 @@ static Type *union_decl(Token **rest, Token *tok) {
 static Member *get_struct_member(Type *ty, Token *tok) {
   for (Member *mem = ty->members; mem; mem = mem->next) {
     // Anonymous struct member
+    // Returns the anonymous struct member, not the member within the
+    // anonymous struct.
     if ((mem->ty->kind == TY_STRUCT || mem->ty->kind == TY_UNION) &&
         !mem->name) {
       if (get_struct_member(mem->ty, tok))
@@ -2898,6 +2901,8 @@ static Member *get_struct_member(Type *ty, Token *tok) {
 // member "a" of the anonymous struct as "x.a".
 //
 // This function takes care of anonymous structs.
+// ND_MEMBER nodes are created to access the anonymous struct member(s)
+// in the outer struct, before the ND_MEMBER for the final field.
 static Node *struct_ref(Node *node, Token *tok) {
   add_type(node);
   if (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION)
@@ -3036,6 +3041,7 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
     } else if (arg->ty->kind == TY_FLOAT) {
       // If parameter type is omitted (e.g. in "..."), float
       // arguments are promoted to double.
+      // TODO : is this target specific behaviour?
       arg = new_cast(arg, ty_double);
     }
 

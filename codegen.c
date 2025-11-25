@@ -1492,7 +1492,7 @@ static LLVMValueRef get_gvar_init_val(GVarInitializer *ginit) {
   }
 }
 
-static void emit_data(Obj *prog) {
+static void emit1(Obj *prog) {
   for (Obj *var = prog; var; var = var->next) {
     if (var->is_function) {
       if (!var->is_live) {
@@ -1577,14 +1577,13 @@ static void emit_data(Obj *prog) {
   );
 }
 
-static void emit_text(Obj *prog) {
+static void emit2(Obj *prog) {
   for (Obj *fn = prog; fn; fn = fn->next) {
     if (!fn->is_function) {
       continue;
     }
   
-    // No code is emitted for "static inline" functions
-    // if no one is referencing them.
+    // No code is emitted for "static" functions if no one is referencing them.
     if (!fn->is_live) {
       continue;
     }
@@ -1745,8 +1744,8 @@ void codegen(Obj *prog, CodeGenOutputType out_type, FILE *out) {
   LLVMSetTarget(current_ir_module, target_triple);
   LLVMSetModuleDataLayout(current_ir_module, layout);
 
-  emit_data(prog);
-  emit_text(prog);
+  emit1(prog);
+  emit2(prog);
 
   err_msg = NULL;
   if (LLVMVerifyModule(current_ir_module, LLVMPrintMessageAction, &err_msg)) {

@@ -61,6 +61,20 @@ int main() {
   ASSERT(1, ({ struct {int a;} x={1}, y={2}; (1?x:y).a; }));
   ASSERT(2, ({ struct {int a;} x={1}, y={2}; (0?x:y).a; }));
 
+  // Anonymous structs.
+  ASSERT(3, ({ \
+    struct {int a; int b; struct { int c; int d; }; } x = {1, 2, 3, 4}; \
+    x.c; \
+  }));
+  ASSERT(3, ({ \
+    struct {int a; int b; struct { int c; int d; }; } x = {1, 2, {3, 4}}; \
+    x.c; \
+  }));
+  ASSERT(4, ({ \
+    struct {int a; int b; struct { int c; int d; }; } x = {1, 2, {3, 4}}; \
+    x.d; \
+  }));
+
   printf("OK\n");
   return 0;
 }

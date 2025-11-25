@@ -133,8 +133,6 @@ struct Obj {
   Token *tok;    // representative token
   bool is_local; // local or global/function
   int align;     // alignment
-
-  // Local variable
   LLVMValueRef ir_val;
 
   // Global variable or function
@@ -146,8 +144,6 @@ struct Obj {
   bool is_tentative;
   bool is_tls;
   GVarInitializer *init;
-  // char *init_data;
-  // Relocation *rel;
 
   // Global or local variable.
   bool is_const;
@@ -158,7 +154,6 @@ struct Obj {
   Obj *params;
   Node *body;
   Obj *locals;
-  // Obj *va_area;
   int stack_size;
   Node *gotos;
   Node *labels;
@@ -254,7 +249,6 @@ struct Node {
   // Function call
   Type *func_ty;
   Node *args;
-  // bool pass_by_stack;
   Obj *ret_buffer;
 
   // Goto or labeled statement, or labels-as-values
