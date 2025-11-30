@@ -21,7 +21,6 @@ static bool opt_cc1;
 static bool opt_hash_hash_hash;
 static bool opt_static;
 static bool opt_shared;
-static bool opt_emit_llvm;
 static char *opt_MF;
 static char *opt_MT;
 static char *opt_o;
@@ -149,11 +148,6 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-S")) {
       opt_S = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-emit-llvm")) {
-      opt_emit_llvm = true;
       continue;
     }
 
@@ -571,20 +565,10 @@ static void cc1(void) {
   FILE *output_buf = open_memstream(&buf, &buflen);
 
   // Traverse the AST to emit assembly.
-  CodeGenOutputType out_type;
-  if (opt_S) {
-    if (opt_emit_llvm) {
-      out_type = CODEGEN_OUTPUT_LLVM;
-    } else {
-      out_type = CODEGEN_OUTPUT_ASSEMBLY;
-    }
-  } else {
-    out_type = CODEGEN_OUTPUT_OBJECT;
-  }
-  codegen(prog, out_type, output_buf);
+  codegen(prog, output_buf);
   fclose(output_buf);
 
-  // Write the asembly text to a file.
+  // Write the assembly text to a file.
   FILE *out = open_file(output_file);
   fwrite(buf, buflen, 1, out);
   fclose(out);

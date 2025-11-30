@@ -18,8 +18,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "llvm-c/Core.h"
-
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
@@ -27,11 +25,14 @@
 # define __attribute__(x)
 #endif
 
+#define PTR_SIZE 4
+
 typedef struct Type Type;
 typedef struct Node Node;
 typedef struct Member Member;
-typedef struct GVarInitializer GVarInitializer;
+typedef struct Relocation Relocation;
 typedef struct Hideset Hideset;
+typedef struct BasicBlock BasicBlock;
 
 //
 // strings.c
@@ -133,7 +134,6 @@ struct Obj {
   Token *tok;    // representative token
   bool is_local; // local or global/function
   int align;     // alignment
-  LLVMValueRef ir_val;
 
   // Global variable or function
   bool is_function;
@@ -143,9 +143,13 @@ struct Obj {
   // Global variable
   bool is_tentative;
   bool is_tls;
-  GVarInitializer *init;
+  char *init_data;
+  Relocation *rel;
 
   // Global or local variable.
+  // For globals, offset is var location relative to start of data section.
+  // For locals, offset is var location relative to frame pointer.
+  int offset;
   bool is_const;
 
   // Function
@@ -157,11 +161,23 @@ struct Obj {
   int stack_size;
   Node *gotos;
   Node *labels;
+  BasicBlock *bbs;
 
   // Static inline function
   bool is_live;
   bool is_root;
   StringArray refs;
+};
+
+// Global variable can be initialized either by a constant expression
+// or a pointer to another global variable. This struct represents the
+// latter.
+typedef struct Relocation Relocation;
+struct Relocation {
+  Relocation *next;
+  int offset;
+  Obj *var;
+  long addend;
 };
 
 // AST node
@@ -254,15 +270,15 @@ struct Node {
   // Goto or labeled statement, or labels-as-values
   char *label;
   Node *goto_next;
-  LLVMBasicBlockRef goto_bb;
+  BasicBlock *goto_bb;
 
   // Switch
   Node *case_next;
+  Node *default_case;
 
   // Case
   long begin;
   long end;
-  bool is_default;
 
   // "asm" string literal
   char *asm_str;
@@ -287,22 +303,6 @@ struct Node {
   double fval;
 };
 
-struct GVarInitializer {
-  Type *ty;
-  LLVMTypeRef ir_type;
-  bool ir_type_started;
-  Token *tok;
-
-  double fval;
-  int64_t val;
-  Obj *var;
-
-  // If it's an initializer for an aggregate type (e.g. array or struct),
-  // `children` has initializers for its children.
-  GVarInitializer *children;
-  size_t n_children;
-};
-
 Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
 Obj *parse(Token *tok);
@@ -318,6 +318,7 @@ typedef enum {
   TY_SHORT,
   TY_INT,
   TY_LONG,
+  TY_LONGLONG,
   TY_FLOAT,
   TY_DOUBLE,
   TY_LDOUBLE,
@@ -369,10 +370,6 @@ struct Type {
   Type *params;
   bool is_variadic;
   Type *next;
-
-  // Code gen.
-  bool ir_type_started;
-  LLVMTypeRef ir_type;
 };
 
 // Struct member
@@ -398,11 +395,13 @@ extern Type *ty_char;
 extern Type *ty_short;
 extern Type *ty_int;
 extern Type *ty_long;
+extern Type *ty_longlong;
 
 extern Type *ty_uchar;
 extern Type *ty_ushort;
 extern Type *ty_uint;
 extern Type *ty_ulong;
+extern Type *ty_ulonglong;
 
 extern Type *ty_float;
 extern Type *ty_double;
@@ -425,13 +424,7 @@ void add_type(Node *node);
 // codegen.c
 //
 
-typedef enum {
-  CODEGEN_OUTPUT_OBJECT,
-  CODEGEN_OUTPUT_ASSEMBLY,
-  CODEGEN_OUTPUT_LLVM,
-} CodeGenOutputType;
-
-void codegen(Obj *prog, CodeGenOutputType out_type, FILE *out);
+void codegen(Obj *prog, FILE *out);
 int align_to(int n, int align);
 
 //

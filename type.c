@@ -6,12 +6,14 @@ Type *ty_bool = &(Type){TY_BOOL, 1, 1};
 Type *ty_char = &(Type){TY_CHAR, 1, 1};
 Type *ty_short = &(Type){TY_SHORT, 2, 2};
 Type *ty_int = &(Type){TY_INT, 4, 4};
-Type *ty_long = &(Type){TY_LONG, 8, 8};
+Type *ty_long = &(Type){TY_LONG, 4, 4};
+Type *ty_longlong = &(Type){TY_LONGLONG, 8, 8, true};
 
 Type *ty_uchar = &(Type){TY_CHAR, 1, 1, true};
 Type *ty_ushort = &(Type){TY_SHORT, 2, 2, true};
 Type *ty_uint = &(Type){TY_INT, 4, 4, true};
-Type *ty_ulong = &(Type){TY_LONG, 8, 8, true};
+Type *ty_ulong = &(Type){TY_LONG, 4, 4, true};
+Type *ty_ulonglong = &(Type){TY_LONGLONG, 8, 8, true};
 
 Type *ty_float = &(Type){TY_FLOAT, 4, 4};
 Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
@@ -28,7 +30,8 @@ static Type *new_type(TypeKind kind, int size, int align) {
 bool is_integer(Type *ty) {
   TypeKind k = ty->kind;
   return k == TY_BOOL || k == TY_CHAR || k == TY_SHORT ||
-         k == TY_INT  || k == TY_LONG || k == TY_ENUM;
+         k == TY_INT  || k == TY_LONG || k == TY_LONGLONG ||
+         k == TY_ENUM;
 }
 
 bool is_flonum(Type *ty) {
@@ -58,6 +61,7 @@ bool is_compatible(Type *t1, Type *t2) {
   case TY_SHORT:
   case TY_INT:
   case TY_LONG:
+  case TY_LONGLONG:
     return t1->is_unsigned == t2->is_unsigned;
   case TY_FLOAT:
   case TY_DOUBLE:
@@ -83,6 +87,8 @@ bool is_compatible(Type *t1, Type *t2) {
       return false;
     return t1->array_len < 0 && t2->array_len < 0 &&
            t1->array_len == t2->array_len;
+  default:
+    break;
   }
   return false;
 }
@@ -95,7 +101,7 @@ Type *copy_type(Type *ty) {
 }
 
 Type *pointer_to(Type *base) {
-  Type *ty = new_type(TY_PTR, 8, 8);
+  Type *ty = new_type(TY_PTR, PTR_SIZE, PTR_SIZE);
   ty->base = base;
   ty->is_unsigned = true;
   return ty;
@@ -117,7 +123,7 @@ Type *array_of(Type *base, int len) {
 }
 
 Type *vla_of(Type *base, Node *len) {
-  Type *ty = new_type(TY_VLA, 8, 8);
+  Type *ty = new_type(TY_VLA, PTR_SIZE, PTR_SIZE);
   ty->base = base;
   ty->vla_len = len;
   return ty;
@@ -170,8 +176,9 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
 static void usual_arith_conv(Node **lhs, Node **rhs) {
   bool lhs_is_ptr = (*lhs)->ty->base || ((*lhs)->ty->kind == TY_FUNC);
   bool rhs_is_ptr = (*rhs)->ty->base || ((*rhs)->ty->kind == TY_FUNC);
-  // Don't cast a non-pointer to a pointer.
-  if (lhs_is_ptr ^ rhs_is_ptr) {
+  // For lhs=ptr and rhs=int convert rhs to pointer sized int.
+  if (lhs_is_ptr && !rhs_is_ptr) {
+    *rhs = new_cast(*rhs, ty_ulong);
     return;
   }
 
@@ -324,5 +331,7 @@ void add_type(Node *node) {
   case ND_VA_ARG:
     node->ty = node->arg_ty;
     return;
+  default:
+    break;
   }
 }

@@ -219,12 +219,12 @@ static Node *new_num(int64_t val, Token *tok) {
   return node;
 }
 
-// static Node *new_long(int64_t val, Token *tok) {
-//   Node *node = new_node(ND_NUM, tok);
-//   node->val = val;
-//   node->ty = ty_long;
-//   return node;
-// }
+static Node *new_long(int64_t val, Token *tok) {
+  Node *node = new_node(ND_NUM, tok);
+  node->val = val;
+  node->ty = ty_long;
+  return node;
+}
 
 static Node *new_ulong(long val, Token *tok) {
   Node *node = new_node(ND_NUM, tok);
@@ -342,52 +342,8 @@ static Obj *new_anon_gvar(Type *ty) {
 }
 
 static Obj *new_string_literal(char *p, Type *ty) {
-  static int id = 0;
-  char *name = format(".str.%d", id++);
-  Obj *var = new_gvar(name, ty);
-
-  GVarInitializer *ginit = calloc(1, sizeof(GVarInitializer));
-  var->init = ginit;
-  var->is_const = true;
-
-  ginit->ty = ty;
-
-  if (ty->array_len <= 0) {
-    return var;
-  }
-
-  ginit->n_children = ty->array_len;
-  ginit->children = calloc(ty->array_len, sizeof(GVarInitializer));
-
-  switch (ty->base->size) {
-  case 1: {
-    uint8_t *str = (uint8_t *)p;
-    for (int i = 0; i < ty->array_len; i++) {
-      ginit->children[i].ty = ty->base;
-      ginit->children[i].val = str[i];
-    }
-    break;
-  }
-  case 2: {
-    uint16_t *str = (uint16_t *)p;
-    for (int i = 0; i < ty->array_len; i++) {
-      ginit->children[i].ty = ty->base;
-      ginit->children[i].val = str[i];
-    }
-    break;
-  }
-  case 4: {
-    uint32_t *str = (uint32_t *)p;
-    for (int i = 0; i < ty->array_len; i++) {
-      ginit->children[i].ty = ty->base;
-      ginit->children[i].val = str[i];
-    }
-    break;
-  }
-  default:
-    unreachable();
-  }
-
+  Obj *var = new_anon_gvar(ty);
+  var->init_data = p;
   return var;
 }
 
@@ -617,15 +573,19 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     case LONG + LONG + INT:
     case SIGNED + LONG:
     case SIGNED + LONG + INT:
+      ty = ty_long;
+      break;
     case SIGNED + LONG + LONG:
     case SIGNED + LONG + LONG + INT:
-      ty = ty_long;
+      ty = ty_longlong;
       break;
     case UNSIGNED + LONG:
     case UNSIGNED + LONG + INT:
+      ty = ty_ulong;
+      break;
     case UNSIGNED + LONG + LONG:
     case UNSIGNED + LONG + LONG + INT:
-      ty = ty_ulong;
+      ty = ty_ulonglong;
       break;
     case FLOAT:
       ty = ty_float;
@@ -1472,110 +1432,96 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   return new_binary(ND_COMMA, lhs, rhs, tok);
 }
 
-// static uint64_t read_buf(char *buf, int sz) {
-//   if (sz == 1)
-//     return *buf;
-//   if (sz == 2)
-//     return *(uint16_t *)buf;
-//   if (sz == 4)
-//     return *(uint32_t *)buf;
-//   if (sz == 8)
-//     return *(uint64_t *)buf;
-//   unreachable();
-// }
+static uint64_t read_buf(char *buf, int sz) {
+  if (sz == 1)
+    return *buf;
+  if (sz == 2)
+    return *(uint16_t *)buf;
+  if (sz == 4)
+    return *(uint32_t *)buf;
+  if (sz == 8)
+    return *(uint64_t *)buf;
+  unreachable();
+}
 
-// static void write_buf(char *buf, uint64_t val, int sz) {
-//   if (sz == 1)
-//     *buf = val;
-//   else if (sz == 2)
-//     *(uint16_t *)buf = val;
-//   else if (sz == 4)
-//     *(uint32_t *)buf = val;
-//   else if (sz == 8)
-//     *(uint64_t *)buf = val;
-//   else
-//     unreachable();
-// }
+static void write_buf(char *buf, uint64_t val, int sz) {
+  if (sz == 1)
+    *buf = val;
+  else if (sz == 2)
+    *(uint16_t *)buf = val;
+  else if (sz == 4)
+    *(uint32_t *)buf = val;
+  else if (sz == 8)
+    *(uint64_t *)buf = val;
+  else
+    unreachable();
+}
 
-static void
-build_gvar_init(GVarInitializer *ginit, Initializer *init) {
-  ginit->ty = init->ty;
-  ginit->tok = init->tok;
-
-  // TODO : Need to create new types for arrays and structs in case one of the
-  // child elements is a union?
-
-  if (init->ty->kind == TY_ARRAY) {
-    ginit->n_children = init->ty->array_len;
-    ginit->children = calloc(ginit->n_children, sizeof(GVarInitializer));
-    for (int i = 0; i < ginit->n_children; i++) {
-      build_gvar_init(&ginit->children[i], init->children[i]);
-    }
-    return;
+static Relocation *write_gvar_data(
+  Relocation *cur, Initializer *init, Type *ty, char *buf, int offset
+) {
+  if (ty->kind == TY_ARRAY) {
+    int sz = ty->base->size;
+    for (int i = 0; i < ty->array_len; i++)
+      cur = write_gvar_data(cur, init->children[i], ty->base, buf, offset + sz * i);
+    return cur;
   }
 
-  if (init->ty->kind == TY_STRUCT) {
-    ginit->n_children = 0;
-    for (Member *mem = init->ty->members; mem; mem = mem->next) {
-      ginit->n_children += 1;
-    }
-    ginit->children = calloc(ginit->n_children, sizeof(GVarInitializer));
-    for (Member *mem = init->ty->members; mem; mem = mem->next) {
+  if (ty->kind == TY_STRUCT) {
+    for (Member *mem = ty->members; mem; mem = mem->next) {
       if (mem->is_bitfield) {
-        // Node *expr = init->children[mem->idx]->expr;
-        // if (!expr)
-        //   break;
+        Node *expr = init->children[mem->idx]->expr;
+        if (!expr)
+          break;
 
-        // char *loc = buf + offset + mem->offset;
-        // uint64_t oldval = read_buf(loc, mem->ty->size);
-        // uint64_t newval = eval(expr);
-        // uint64_t mask = (1L << mem->bit_width) - 1;
-        // uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
-        // write_buf(loc, combined, mem->ty->size);
-        error_tok(init->tok, "global var bitfield init not supported");
+        char *loc = buf + offset + mem->offset;
+        uint64_t oldval = read_buf(loc, mem->ty->size);
+        uint64_t newval = eval(expr);
+        uint64_t mask = (1L << mem->bit_width) - 1;
+        uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
+        write_buf(loc, combined, mem->ty->size);
       } else {
-        build_gvar_init(&ginit->children[mem->idx], init->children[mem->idx]);
+        cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
+                              offset + mem->offset);
       }
     }
-    return;
+    return cur;
   }
 
-  if (init->ty->kind == TY_UNION) {
-    Initializer *child_init;
-    if (init->mem) {
-      child_init = init->children[init->mem->idx];
-    } else {
-      // init->mem is null when there is no initializer for the union.
-      // For example:
-      //   union { int a; } g51[2] = {};
-      // union_initializer() is never called on the new initializer from
-      // new_initializer(). 
-      child_init = init->children[0];
-    }
-    ginit->n_children = 1;
-    ginit->children = calloc(1, sizeof(GVarInitializer));
-    build_gvar_init(ginit->children, child_init);
-    return;
+  if (ty->kind == TY_UNION) {
+    if (!init->mem)
+      return cur;
+    return write_gvar_data(cur, init->children[init->mem->idx],
+                           init->mem->ty, buf, offset);
   }
 
-  if (!init->expr) {
-    return;
+  if (!init->expr)
+    return cur;
+
+  if (ty->kind == TY_FLOAT) {
+    *(float *)(buf + offset) = eval_double(init->expr);
+    return cur;
   }
 
-  if (init->ty->kind == TY_FLOAT || init->ty->kind == TY_DOUBLE || init->ty->kind == TY_LDOUBLE) {
-    ginit->fval = eval_double(init->expr);
-    return;
+  if (ty->kind == TY_DOUBLE) {
+    *(double *)(buf + offset) = eval_double(init->expr);
+    return cur;
   }
 
-  Obj* gvar = NULL;
-  int64_t val = eval2(init->expr, &gvar);
+  Obj *gvar = NULL;
+  uint64_t val = eval2(init->expr, &gvar);
 
-  // If eval2 sets gvar it means that the initializer refers to another
-  // global var. The returned val is the offset from the global var.
-  if (gvar != NULL) {
-    ginit->var = gvar;
+  if (!gvar) {
+    write_buf(buf + offset, val, ty->size);
+    return cur;
   }
-  ginit->val = val;
+
+  Relocation *rel = calloc(1, sizeof(Relocation));
+  rel->offset = offset;
+  rel->var = gvar;
+  rel->addend = val;
+  cur->next = rel;
+  return cur->next;
 }
 
 // Initializers for global variables are evaluated at compile-time and
@@ -1591,9 +1537,12 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
   // Also note that all types that make it to the codegen are fixed size, flexibly sized types are
   // only a concern for the parser.
   Initializer *init = initializer(rest, tok, var->ty, &var->ty);
-  GVarInitializer *ginit = calloc(1, sizeof(GVarInitializer));
-  build_gvar_init(ginit, init);
-  var->init = ginit;
+
+  Relocation head = {};
+  char *buf = calloc(1, var->ty->size);
+  write_gvar_data(&head, init, var->ty, buf, 0);
+  var->init_data = buf;
+  var->rel = head.next;
 }
 
 // Returns true if a given token represents a type.
@@ -1731,9 +1680,7 @@ static Node *stmt(Token **rest, Token *tok) {
     tok = skip(tok->next, ":");
     node->label = new_unique_name();
     node->lhs = stmt(rest, tok);
-    node->is_default = true;
-    node->case_next = current_switch->case_next;
-    current_switch->case_next = node;
+    current_switch->default_case = node;
     return node;
   }
 
@@ -1943,14 +1890,6 @@ static int64_t eval2(Node *node, Obj **gvar) {
   if (is_flonum(node->ty))
     return eval_double(node);
 
-  // TODO : We shouldn't need to know the sizes of types and member offsets
-  // here. Build an index list instead? But then would need an actual expression tree.
-  // Query codegen for type sizes and member offsets?
-  // Or just build a simplified constant expression tree and pass to codegen?
-  // const_expr and eval (with no ability to reference gvars) kind of need to resolve
-  // to an integer though, as it is used for case conditions (which in LLVM can be a valueref)
-  // and array sizes (which are just integers).
-
   switch (node->kind) {
   case ND_ADD: {
     int64_t lhs = eval2(node->lhs, gvar);
@@ -2060,6 +1999,8 @@ static int64_t eval2(Node *node, Obj **gvar) {
     return 0;
   case ND_NUM:
     return node->val;
+  default:
+    break;
   }
 
   error_tok(node->tok, "not a compile-time constant");
@@ -2078,6 +2019,8 @@ static int64_t eval_rval(Node *node, Obj **gvar) {
     return eval2(node->lhs, gvar);
   case ND_MEMBER:
     return eval_rval(node->lhs, gvar) + node->member->offset;
+  default:
+    break;
   }
 
   error_tok(node->tok, "invalid initializer");
@@ -2116,6 +2059,8 @@ static bool is_const_expr(Node *node) {
     return is_const_expr(node->lhs);
   case ND_NUM:
     return true;
+  default:
+    break;
   }
 
   return false;
@@ -2156,6 +2101,8 @@ static double eval_double(Node *node) {
     return eval(node->lhs);
   case ND_NUM:
     return node->fval;
+  default:
+    break;
   }
 
   error_tok(node->tok, "not a compile-time constant");
@@ -2501,8 +2448,7 @@ static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
   }
 
   // VLA + num
-  // vla_size is an lvar containing the VLA size in bytes, not elements
-  // codegen will need to account for this and pretend the VLA type is i8.
+  // vla_size is an lvar containing the VLA size in bytes.
   if (lhs->ty->base->kind == TY_VLA) {
     rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
     return new_binary(ND_ADD, lhs, rhs, tok);
@@ -2510,6 +2456,7 @@ static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
 
   // ptr + num
   if (lhs->ty->base && is_integer(rhs->ty)) {
+    rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
     return new_binary(ND_ADD, lhs, rhs, tok);
   }
 
@@ -2533,6 +2480,7 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
 
   // ptr - num
   if (lhs->ty->base && is_integer(rhs->ty)) {
+    rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
     return new_binary(ND_SUB, lhs, rhs, tok);
   }
 
@@ -2540,7 +2488,7 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
   if (lhs->ty->base && rhs->ty->base) {
     Node *node = new_binary(ND_SUB, lhs, rhs, tok);
     node->ty = ty_long;
-    return node;
+    return new_binary(ND_DIV, node, new_num(lhs->ty->base->size, tok), tok);
   }
 
   error_tok(tok, "invalid operands");

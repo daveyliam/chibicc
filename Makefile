@@ -1,5 +1,4 @@
-CFLAGS:=-std=c11 -g -fno-common -Wall -Werror -Wno-switch -fPIC
-LDFLAGS:=-lLLVM
+CFLAGS:=-std=c11 -g -fno-common -Wall -Werror -fPIC
 
 SRCS:=$(wildcard *.c)
 OBJS:=$(patsubst %.c,build/%.o,$(SRCS))
@@ -20,10 +19,11 @@ $(OBJS): build/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
 build/test/%.o: test/%.c chibicc
-	./chibicc -Iinclude -Itest -S -emit-llvm -o build/test/$*.ll $<
-	llc build/test/$*.ll
-	./chibicc -Iinclude -Itest -c -o build/test/$*.o $<
-	./chibicc -Iinclude -Itest -c -o $@ $<
+	./chibicc -Iinclude -Itest -S -o build/test/$*.wat $<
+	wat2wasm build/test/$*.wat -o build/test/$*.wasm
+	wasm-validate build/test/$*.wasm
+	cp build/test/$*.wasm $@
+#	./chibicc -Iinclude -Itest -c -o $@ $<
 
 build/test/%.exe: build/test/%.o build/test/common.o
 	$(CC) -pthread -o $@ $^

@@ -1,21 +1,6 @@
 # chibicc: A Small C Compiler
 
-## LLVM Codegen (WIP)
-
-Modified codegen.c to use the LLVM-C API to produce either LLVM IR
-(use the '-S' and '-emit-llvm' flags), native assembly ('-S' flag) or
-object files directly ('-c' flag).
-
-Most tests are working except for those in the 'test_wip' and
-'test/thirdparty' directories.
-
-Will still only produce code for linux x86-64 hosts.
-Getting it working for other platforms and architectures is a WIP.
-The codegen should now be able to target other platforms fairly
-easily (minus a few places where pointers are assumed to be i64 sized).
-But the preprocessor and parser still make many assumptions that are only
-valid for linux x86-64 e.g. built in defines, pointer size, type sizes,
-data layout, calling convention specifics.
+## WASM Codegen (WIP)
 
 ## README from rui314/chibicc
 
