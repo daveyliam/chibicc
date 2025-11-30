@@ -272,7 +272,7 @@ static void gen_addr(Node *node) {
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
-    put_insn("drop");
+    // put_insn("drop");
     gen_addr(node->rhs);
     return;
   case ND_MEMBER:
@@ -591,7 +591,7 @@ static void gen_expr(Node *node) {
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
-    put_insn("drop");
+    // put_insn("drop");
     gen_expr(node->rhs);
     return;
   case ND_CAST:
@@ -678,7 +678,6 @@ static void gen_expr(Node *node) {
     put_insn_br_if(end_bb, rhs_bb);
 
     set_current_bb(rhs_bb);
-    put_insn("drop");
     gen_expr(node->rhs);
     cmp_zero(node->rhs->ty);
     put_insn("i32.eqz");
@@ -694,6 +693,10 @@ static void gen_expr(Node *node) {
   }
   case ND_FUNCALL: {
     // Build args.
+    for (Node *arg = node->args; arg; arg = arg->next) {
+      gen_expr(arg);
+    }
+
     // If the return type is a struct/union, the caller passes
     // a pointer to a stack buffer as if it were the last argument.
     // TODO : Make it the first argument to match clang behavior.
@@ -1915,10 +1918,11 @@ static void stackify(BasicBlock *bb_list_head) {
   free(bbs);
 }
 
+#define WASM_PAGE_SIZE 4096
 #define WASM_DATA_START 1024
 #define WASM_STACK_SIZE 65536
 
-static void emit_gvars(Obj *prog) {
+static int calculate_gvar_offsets(Obj *prog) {
   int data_offset = WASM_DATA_START;
 
   // First calculate offsets and indexes of global vars.
@@ -1936,91 +1940,53 @@ static void emit_gvars(Obj *prog) {
     data_offset += var->ty->size;
   }
 
-  // Do we need this? Should have one linear memory by default.
-  put_wasm("(memory 1)\n");
-
-  // Stack pointer is always the first global.
-  // Stack starts after global variables.
-  data_offset = align_to(data_offset, 4);
-  fmt_wasm("(global $__stack_pointer (mut i32) (i32.const %d))\n", data_offset + WASM_STACK_SIZE);
-
-  // Add '(global ...)' definitions.
-  for (Obj *var = prog; var; var = var->next) {
-    if (var->is_function) {
-      continue;
-    }
-  
-    // For global vars is_definition is false if the var has the 'extern' attribute.
-    if (!var->is_definition) {
-      // TODO : add import.
-      continue;
-    }
-
-    // TODO : add export for non-static vars.
-    if (!var->is_static) {
-    }
-
-    // TODO : is_const should be part of the type?
-    // TODO : can't really mark memory locations constant?
-    if (var->is_const) {
-    }
-
-    // TODO : thread local global vars.
-    if (var->is_tls) {  
-    }
-
-    fmt_wasm("(global $%s i32 (i32.const %d))\n", var->name, var->offset);
-  }
-
-  // Add '(data ...)' memory initialization data for global vars with initializers.
-  for (Obj *var = prog; var; var = var->next) {
-    if (var->is_function || !var->is_definition || !var->init_data) {
-      continue;
-    }
-
-    fmt_wasm("(data (i32.const %d) \"", var->offset);
-    int pos = 0;
-    Relocation *rel = var->rel;
-    while (pos < var->ty->size) {
-      if (rel && rel->offset == pos) {
-        uint32_t rel_var_offset = rel->var->offset;
-        fmt_wasm(
-          "\\%02x\\%02x\\%02x\\%02x",
-          (rel_var_offset >> 0) & 0xff,
-          (rel_var_offset >> 8) & 0xff,
-          (rel_var_offset >> 16) & 0xff,
-          (rel_var_offset >> 24) & 0xff
-        );
-        pos += 4;
-      } else {
-        fmt_wasm("\\%02x", var->init_data[pos]);
-        pos += 1;
-      }
-    }
-    put_wasm("\")\n");
-  }
+  return data_offset;
 }
 
-static void emit_funcs(Obj *prog) {
+static void emit_imports(Obj *prog) {
+  int type_index = 0;
   for (Obj *fn = prog; fn; fn = fn->next) {
     if (!fn->is_function) {
       continue;
     }
-  
+    
     // No code is emitted for "static" functions if no one is referencing them.
     if (!fn->is_live) {
       continue;
     }
 
-    if (!fn->is_definition) {
-      // TODO : imported functions.
+    // Functions without a definition are imports.
+    if (fn->is_definition) {
       continue;
     }
 
-    if (!fn->is_static) {
-      // TODO : add export if not static.
-    }
+    // Imported function. Add function type and import.
+    Type *return_ty = fn->ty->return_ty;
+    // bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
 
+    fmt_wasm("(type (;%d;) (func (param", type_index);
+    for (Type *param_ty = fn->ty->params; param_ty; param_ty = param_ty->next) {
+      fmt_wasm(" %s", get_wasm_type(param_ty));
+    }
+    if (return_ty->kind != TY_VOID) {
+      fmt_wasm(") (result %s)))\n", get_wasm_type(return_ty));
+    } else {
+      put_wasm(")))\n");
+    }
+    fmt_wasm(
+      "(import \"wasi_snapshot_preview1\" \"%s\" (func $%s (type %d)))\n",
+      fn->name, fn->name, type_index
+    );
+    type_index += 1;
+  }
+}
+
+static void emit_funcs(Obj *prog) {
+  for (Obj *fn = prog; fn; fn = fn->next) {
+    if (!fn->is_function || !fn->is_live || !fn->is_definition) {
+      continue;
+    }
+  
     current_function = fn;
     current_function_local_counter = 0;
     current_function_bb_counter = 0;
@@ -2172,11 +2138,98 @@ static void emit_funcs(Obj *prog) {
   }
 }
 
+static void emit_exports(Obj *prog) {
+  put_wasm("(export \"memory\" (memory 0))\n");
+  for (Obj *fn = prog; fn; fn = fn->next) {
+    if (!fn->is_function || !fn->is_live || !fn->is_definition || fn->is_static) {
+      continue;
+    }
+    // Add export for non-static defined functions.
+    fmt_wasm("(export \"%s\" (func $%s))\n", fn->name, fn->name);
+  }
+}
+
+static void emit_gvars(Obj *prog, int data_end_offset) {
+  // Stack starts after global variables.
+  int stack_start_offset = align_to(data_end_offset, WASM_PAGE_SIZE);
+  int stack_end_offset = stack_start_offset + WASM_STACK_SIZE;
+  int memory_size = align_to(stack_end_offset, WASM_PAGE_SIZE);
+
+  // Memory size in 4096 B pages.
+  fmt_wasm("(memory %d)\n", memory_size / WASM_PAGE_SIZE);
+
+  // Stack pointer is always the first global.
+
+  fmt_wasm(
+    "(global $__stack_pointer (mut i32) (i32.const %d))\n",
+    stack_end_offset
+  );
+
+  // Add '(global ...)' definitions.
+  for (Obj *var = prog; var; var = var->next) {
+    if (var->is_function) {
+      continue;
+    }
+  
+    // For global vars is_definition is false if the var has the 'extern' attribute.
+    if (!var->is_definition) {
+      // TODO : add import.
+      continue;
+    }
+
+    // TODO : add export for non-static vars.
+    if (!var->is_static) {
+    }
+
+    // TODO : is_const should be part of the type?
+    // TODO : can't really mark memory locations constant?
+    if (var->is_const) {
+    }
+
+    // TODO : thread local global vars.
+    if (var->is_tls) {  
+    }
+
+    fmt_wasm("(global $%s i32 (i32.const %d))\n", var->name, var->offset);
+  }
+
+  // Add '(data ...)' memory initialization data for global vars with initializers.
+  for (Obj *var = prog; var; var = var->next) {
+    if (var->is_function || !var->is_definition || !var->init_data) {
+      continue;
+    }
+
+    fmt_wasm("(data (i32.const %d) \"", var->offset);
+    int pos = 0;
+    Relocation *rel = var->rel;
+    while (pos < var->ty->size) {
+      if (rel && rel->offset == pos) {
+        uint32_t rel_var_offset = rel->var->offset;
+        fmt_wasm(
+          "\\%02x\\%02x\\%02x\\%02x",
+          (rel_var_offset >> 0) & 0xff,
+          (rel_var_offset >> 8) & 0xff,
+          (rel_var_offset >> 16) & 0xff,
+          (rel_var_offset >> 24) & 0xff
+        );
+        pos += 4;
+      } else {
+        fmt_wasm("\\%02x", var->init_data[pos]);
+        pos += 1;
+      }
+    }
+    put_wasm("\")\n");
+  }
+}
+
 void codegen(Obj *prog, FILE *out) {
   current_out_file = out;
   put_wasm("(module $module0\n");
-  emit_gvars(prog);
+  int data_end_offset = calculate_gvar_offsets(prog);
+  emit_imports(prog);
   emit_funcs(prog);
+  emit_exports(prog);
+  emit_gvars(prog, data_end_offset);
   put_wasm(")\n");
   current_out_file = NULL;
 }
