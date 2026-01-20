@@ -69,6 +69,9 @@ static HashMap macros;
 static CondIncl *cond_incl;
 static HashMap pragma_once;
 static int include_next_idx;
+static HashMap include_cache;
+static int counter_macro_id_next;
+static HashMap include_guards;
 
 static Token *preprocess2(Token *tok);
 static Macro *find_macro(Token *tok);
@@ -686,8 +689,7 @@ char *search_include_paths(char *filename) {
   if (filename[0] == '/')
     return filename;
 
-  static HashMap cache;
-  char *cached = hashmap_get(&cache, filename);
+  char *cached = hashmap_get(&include_cache, filename);
   if (cached)
     return cached;
 
@@ -696,7 +698,7 @@ char *search_include_paths(char *filename) {
     char *path = format("%s/%s", include_paths.data[i], filename);
     if (!file_exists(path))
       continue;
-    hashmap_put(&cache, filename, path);
+    hashmap_put(&include_cache, filename, path);
     include_next_idx = i + 1;
     return path;
   }
@@ -800,7 +802,6 @@ static Token *include_file(Token *tok, char *path, Token *filename_tok) {
   // If we read the same file before, and if the file was guarded
   // by the usual #ifndef ... #endif pattern, we may be able to
   // skip the file without opening it.
-  static HashMap include_guards;
   char *guard_name = hashmap_get(&include_guards, path);
   if (guard_name && hashmap_get(&macros, guard_name))
     return tok;
@@ -1020,8 +1021,7 @@ static Token *line_macro(Token *tmpl) {
 
 // __COUNTER__ is expanded to serial values starting from 0.
 static Token *counter_macro(Token *tmpl) {
-  static int i = 0;
-  return new_num_token(i++, tmpl);
+  return new_num_token(counter_macro_id_next++, tmpl);
 }
 
 // __TIMESTAMP__ is expanded to a string describing the last
@@ -1205,4 +1205,14 @@ Token *preprocess(Token *tok) {
   for (Token *t = tok; t; t = t->next)
     t->line_no += t->line_delta;
   return tok;
+}
+
+void reset_preprocess(void) {
+  hashmap_clear(&macros);
+  cond_incl = NULL;
+  hashmap_clear(&pragma_once);
+  include_next_idx = 0;
+  hashmap_clear(&include_cache);
+  counter_macro_id_next = 0;
+  hashmap_clear(&include_guards);
 }

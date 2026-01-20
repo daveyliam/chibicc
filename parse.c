@@ -89,10 +89,10 @@ static Obj *locals;
 // Likewise, global variables are accumulated to this list.
 // Except we use a head pointer to keep the list in the same
 // order as the globals are defined.
+static Obj globals_head = {};
 static Obj *globals;
-static Obj *globals_head;
 
-static Scope *scope = &(Scope){};
+static Scope *scope;
 
 // Points to the function object the parser is currently parsing.
 static Obj *current_fn;
@@ -100,6 +100,9 @@ static Obj *current_fn;
 // Lists of all goto statements and labels in the current function.
 static Node *gotos;
 static Node *labels;
+
+// List of all function calls in the current function.
+static Node *funcalls;
 
 // Whether break or continue statements can be used in the current
 // context.
@@ -109,6 +112,15 @@ static bool is_cont_valid;
 // Points to a node representing a switch if we are parsing
 // a switch statement. Otherwise, NULL.
 static Node *current_switch;
+
+static Obj *builtin_alloca;
+static Obj *builtin_memory_fill;
+static Obj *builtin_memory_copy;
+static Obj *builtin_memory_size;
+static Obj *builtin_memory_grow;
+
+static int anon_gvar_id_next = 0;
+static int anon_string_literal_id_next = 0;
 
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
@@ -320,29 +332,24 @@ static Obj *new_lvar(char *name, Type *ty) {
 }
 
 static Obj *new_gvar(char *name, Type *ty) {
+  // Global var, string literal, or function.
   Obj *var = new_var(name, ty);
   var->is_static = true;
   var->is_definition = true;
-  if (globals_head == NULL) {
-    globals = var;
-  } else {
-    globals_head->next = var;
-  }
-  globals_head = var;
+  var->prog = current_prog;
+  globals->next = var;
+  globals = var;
   return var;
 }
 
-static char *new_unique_name(void) {
-  static int id = 0;
-  return format(".L..%d", id++);
-}
-
 static Obj *new_anon_gvar(Type *ty) {
-  return new_gvar(new_unique_name(), ty);
+  char *name = format(".L..%d", anon_gvar_id_next++);
+  return new_gvar(name, ty);
 }
 
 static Obj *new_string_literal(char *p, Type *ty) {
-  Obj *var = new_anon_gvar(ty);
+  char *name = format(".str.%d", anon_string_literal_id_next++);
+  Obj *var = new_gvar(name, ty);
   var->init_data = p;
   return var;
 }
@@ -569,12 +576,12 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       break;
     case LONG:
     case LONG + INT:
-    case LONG + LONG:
-    case LONG + LONG + INT:
     case SIGNED + LONG:
     case SIGNED + LONG + INT:
       ty = ty_long;
       break;
+    case LONG + LONG:
+    case LONG + LONG + INT:
     case SIGNED + LONG + LONG:
     case SIGNED + LONG + LONG + INT:
       ty = ty_longlong;
@@ -591,10 +598,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       ty = ty_float;
       break;
     case DOUBLE:
-      ty = ty_double;
-      break;
     case LONG + DOUBLE:
-      ty = ty_ldouble;
+      ty = ty_double;
       break;
     default:
       error_tok(tok, "invalid type");
@@ -869,9 +874,12 @@ static Node *compute_vla_size(Type *ty, Token *tok) {
 }
 
 static Node *new_alloca(Node *sz) {
-  Node *node = new_node(ND_ALLOCA, sz->tok);
-  node->ty = pointer_to(ty_void);
+  Node *node = new_unary(ND_FUNCALL, new_var_node(builtin_alloca, sz->tok), sz->tok);
+  node->func_ty = builtin_alloca->ty;
+  node->ty = builtin_alloca->ty->return_ty;
   node->args = sz;
+  node->funcall_next = funcalls;
+  funcalls = node;
   add_type(sz);
   return node;
 }
@@ -1663,7 +1671,6 @@ static Node *stmt(Token **rest, Token *tok) {
     }
 
     tok = skip(tok, ":");
-    node->label = new_unique_name();
     node->lhs = stmt(rest, tok);
     node->begin = begin;
     node->end = end;
@@ -1678,7 +1685,6 @@ static Node *stmt(Token **rest, Token *tok) {
 
     Node *node = new_node(ND_CASE, tok);
     tok = skip(tok->next, ":");
-    node->label = new_unique_name();
     node->lhs = stmt(rest, tok);
     current_switch->default_case = node;
     return node;
@@ -1887,8 +1893,9 @@ static int64_t eval(Node *node) {
 static int64_t eval2(Node *node, Obj **gvar) {
   add_type(node);
 
-  if (is_flonum(node->ty))
+  if (is_flonum(node->ty)) {
     return eval_double(node);
+  }
 
   switch (node->kind) {
   case ND_ADD: {
@@ -1896,7 +1903,6 @@ static int64_t eval2(Node *node, Obj **gvar) {
     int64_t rhs = eval(node->rhs);
     if (node->lhs->ty->base) {
       // ptr + int
-      // XXX : 
       return lhs + (rhs * node->lhs->ty->base->size);
     }
     return lhs + rhs;
@@ -1919,10 +1925,18 @@ static int64_t eval2(Node *node, Obj **gvar) {
   }
   case ND_MUL:
     return eval(node->lhs) * eval(node->rhs);
-  case ND_DIV:
-    if (node->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs) / eval(node->rhs);
-    return eval(node->lhs) / eval(node->rhs);
+  case ND_DIV: {
+    int64_t lhs = eval(node->lhs);
+    int64_t rhs = eval(node->rhs);
+    if (rhs == 0) {
+      printf("lhs=%ld rhs=%ld node->rhs->kind=%d ty=%d\n", lhs, rhs, node->rhs->kind, node->rhs->ty->kind);
+      error_tok(node->tok, "integer division by zero in constant expression");
+    }
+    if (node->ty->is_unsigned) {
+      return (uint64_t)lhs / rhs;
+    }
+    return lhs / rhs;
+  }
   case ND_NEG:
     return -eval(node->lhs);
   case ND_MOD:
@@ -2034,6 +2048,7 @@ static bool is_const_expr(Node *node) {
   case ND_SUB:
   case ND_MUL:
   case ND_DIV:
+  case ND_MOD:
   case ND_BITAND:
   case ND_BITOR:
   case ND_BITXOR:
@@ -2075,8 +2090,9 @@ static double eval_double(Node *node) {
   add_type(node);
 
   if (is_integer(node->ty)) {
-    if (node->ty->is_unsigned)
+    if (node->ty->is_unsigned) {
       return (unsigned long)eval(node);
+    }
     return eval(node);
   }
 
@@ -2087,8 +2103,14 @@ static double eval_double(Node *node) {
     return eval_double(node->lhs) - eval_double(node->rhs);
   case ND_MUL:
     return eval_double(node->lhs) * eval_double(node->rhs);
-  case ND_DIV:
-    return eval_double(node->lhs) / eval_double(node->rhs);
+  case ND_DIV: {
+    double lhs = eval_double(node->lhs);
+    double rhs = eval_double(node->rhs);
+    if (rhs == 0.0) {
+      error_tok(node->tok, "floating point division by zero in constant expression");
+    }
+    return lhs / rhs;
+  }
   case ND_NEG:
     return -eval_double(node->lhs);
   case ND_COND:
@@ -2096,8 +2118,9 @@ static double eval_double(Node *node) {
   case ND_COMMA:
     return eval_double(node->rhs);
   case ND_CAST:
-    if (is_flonum(node->lhs->ty))
+    if (is_flonum(node->lhs->ty)) {
       return eval_double(node->lhs);
+    }
     return eval(node->lhs);
   case ND_NUM:
     return node->fval;
@@ -3006,12 +3029,21 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
   node->func_ty = ty;
   node->ty = ty->return_ty;
   node->args = head.next;
+  node->funcall_next = funcalls;
+  funcalls = node;
 
   // If a function returns a struct, it is caller's responsibility
   // to allocate a space for the return value.
   if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) {
     node->ret_buffer = new_lvar("", node->ty);
   }
+
+  // If a function is variadic, the caller stores variadic args in
+  // a stack buffer, and passes a pointer to it as a hidden arg.
+  if (ty->is_variadic) {
+    node->va_arg_area = new_lvar("", pointer_to(ty_void));
+  }
+
   return node;
 }
 
@@ -3126,14 +3158,6 @@ static Node *primary(Token **rest, Token *tok) {
   if (equal(tok, "_Generic"))
     return generic_selection(rest, tok->next);
 
-  if (equal(tok, "alloca")) {
-    Node *node = new_node(ND_ALLOCA, tok);
-    tok = skip(tok->next, "(");
-    node->args = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
   if (equal(tok, "__builtin_types_compatible_p")) {
     tok = skip(tok->next, "(");
     Type *t1 = typename(&tok, tok);
@@ -3173,48 +3197,6 @@ static Node *primary(Token **rest, Token *tok) {
     node->lhs = assign(&tok, tok);
     tok = skip(tok, ",");
     node->rhs = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_va_start")) {
-    Node *node = new_node(ND_VA_START, tok);
-    tok = skip(tok->next, "(");
-    node->args = assign(&tok, tok);
-    tok = skip(tok, ",");
-    // TODO : should check this is a parameter name.
-    Node *param_node = primary(&tok, tok);
-    if (param_node->kind != ND_VAR) {
-      error_tok(param_node->tok, "expected a parameter name");
-    }
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_va_copy")) {
-    Node *node = new_node(ND_VA_COPY, tok);
-    tok = skip(tok->next, "(");
-    node->args = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->args->next = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_va_end")) {
-    Node *node = new_node(ND_VA_END, tok);
-    tok = skip(tok->next, "(");
-    node->args = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_va_arg")) {
-    Node *node = new_node(ND_VA_ARG, tok);
-    tok = skip(tok->next, "(");
-    node->args = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->arg_ty = typename(&tok, tok);
     *rest = skip(tok, ")");
     return node;
   }
@@ -3369,6 +3351,7 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   current_fn = fn;
   gotos = NULL;
   labels = NULL;
+  funcalls = NULL;
   locals = NULL;
   enter_scope();
   create_param_lvars(ty->params);
@@ -3376,13 +3359,13 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   // A buffer for a struct/union return value is passed
   // as the hidden first parameter.
   Type *rty = ty->return_ty;
-  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 16)
+  if (rty->kind == TY_STRUCT || rty->kind == TY_UNION)
     new_lvar("", pointer_to(rty));
 
   fn->params = locals;
 
-  // if (ty->is_variadic)
-  //   fn->va_area = new_lvar("__va_area__", array_of(ty_char, 136));
+  if (ty->is_variadic)
+    fn->va_area = new_lvar("__va_area__", array_of(ty_char, VA_AREA_SIZE));
 
   tok = skip(tok, "{");
 
@@ -3400,10 +3383,13 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   fn->locals = locals;
   fn->gotos = gotos;
   fn->labels = labels;
+  fn->funcalls = funcalls;
   leave_scope();
   resolve_goto_labels();
   gotos = NULL;
   labels = NULL;
+  funcalls = NULL;
+  locals = NULL;
   return tok;
 }
 
@@ -3426,7 +3412,7 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
     bool is_tentative = !has_initializer && !attr->is_extern && !attr->is_tls;
 
     // Search globals for a previous definition.
-    Obj *var2 = globals;
+    Obj *var2 = globals_head.next;
     for (; var2; var2 = var2->next) {
       if (var2->is_definition && !strcmp(name, var2->name)) {
         break;
@@ -3444,7 +3430,7 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
         error_tok(ty->name, "redefinition of global var");
       }
       // If this is non-tentative, but the previous is tentative, then
-      // the previous definition.
+      // replace the previous definition.
       var = var2;
     }
     else {
@@ -3469,19 +3455,47 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
 // Lookahead tokens and returns true if a given token is a start
 // of a function definition or declaration.
 static bool is_function(Token *tok) {
-  if (equal(tok, ";"))
+  if (equal(tok, ";")) {
     return false;
+  }
 
   Type dummy = {};
   Type *ty = declarator(&tok, tok, &dummy);
   return ty->kind == TY_FUNC;
 }
 
+static void declare_builtin_functions(void) {
+  Type *alloca_ty = func_type(pointer_to(ty_void));
+  alloca_ty->params = copy_type(ty_int);
+  builtin_alloca = new_gvar("alloca", alloca_ty);
+  builtin_alloca->is_definition = false;
+
+  Type *memory_fill_ty = func_type(ty_void);
+  memory_fill_ty->params = pointer_to(ty_void);
+  memory_fill_ty->params->next = copy_type(ty_int);
+  memory_fill_ty->params->next->next = copy_type(ty_ulong);
+  builtin_memory_fill = new_gvar("__builtin_memory_fill", memory_fill_ty);
+  builtin_memory_fill->is_definition = false;
+
+  Type *memory_copy_ty = func_type(ty_void);
+  memory_copy_ty->params = pointer_to(ty_void);
+  memory_copy_ty->params->next = pointer_to(ty_void);
+  memory_copy_ty->params->next->next = copy_type(ty_ulong);
+  builtin_memory_copy = new_gvar("__builtin_memory_copy", memory_copy_ty);
+  builtin_memory_copy->is_definition = false;
+
+  Type *memory_size_ty = func_type(ty_ulong);
+  builtin_memory_size = new_gvar("__builtin_memory_size", memory_size_ty);
+  builtin_memory_size->is_definition = false;
+
+  Type *memory_grow_ty = func_type(ty_ulong);
+  memory_grow_ty->params = copy_type(ty_ulong);
+  builtin_memory_grow = new_gvar("__builtin_memory_grow", memory_grow_ty);
+  builtin_memory_grow->is_definition = false;
+}
+
 // program = (typedef | function-definition | global-variable)*
 Obj *parse(Token *tok) {
-  globals = NULL;
-  globals_head = NULL;
-
   while (tok->kind != TK_EOF) {
     VarAttr attr = {};
     Type *basety = declspec(&tok, tok, &attr);
@@ -3502,9 +3516,29 @@ Obj *parse(Token *tok) {
     tok = global_variable(tok, basety, &attr);
   }
 
-  for (Obj *var = globals; var; var = var->next)
-    if (var->is_root)
+  for (Obj *var = globals_head.next; var; var = var->next) {
+    if (var->is_root) {
       mark_live(var);
+    }
+  }
 
-  return globals;
+  return globals_head.next;
+}
+
+void reset_parse(void) {
+  locals = NULL;
+  globals_head.next = NULL;
+  globals = &globals_head;
+  scope = calloc(1, sizeof(Scope));
+  current_fn = NULL;
+  gotos = NULL;
+  labels = NULL;
+  funcalls = NULL;
+  is_break_valid = false;
+  is_cont_valid = false;
+  current_switch = NULL;
+  anon_gvar_id_next = 0;
+  anon_string_literal_id_next = 0;
+
+  declare_builtin_functions();
 }

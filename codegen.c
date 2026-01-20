@@ -1,5 +1,7 @@
 #include "chibicc.h"
 
+#define DEBUG_STACKIFIER 0
+
 typedef struct Insn {
   struct Insn *next;
   char *op;
@@ -11,7 +13,7 @@ typedef struct BasicBlock {
   struct BasicBlock *next;
   int idx;
   int sorted_idx;
-  Insn *insns_head;
+  Insn insns_head;
   Insn *insns_tail;
   bool is_terminated;
   int outs_count;
@@ -20,10 +22,10 @@ typedef struct BasicBlock {
   struct BasicBlock *forward_outs[MAX_BB_OUTS];
   int backward_outs_count;
   struct BasicBlock *backward_outs[MAX_BB_OUTS];
-  // int ins_count;
-  // struct BasicBlock **ins;
-  uint8_t *ins_set;
+  int ins_count;
+  struct BasicBlock **ins;
   uint8_t *dominators_set;
+  uint8_t *reachable_set;
   bool is_loop_header;
 } BasicBlock;
 
@@ -45,20 +47,30 @@ typedef struct IntVector {
   int capacity;
 } IntVector;
 
-static FILE *current_out_file = NULL;
-static Obj *current_function = NULL;
+typedef struct WasmLocal {
+  struct WasmLocal *next;
+  Type *ty;
+  int idx;
+} WasmLocal;
 
-static int current_function_local_counter = 0;
-static int current_function_bb_counter = 0;
-static BasicBlock *current_function_bbs_head = NULL;
-static BasicBlock *current_function_bbs_tail = NULL;
-static BasicBlock *current_function_return_bb = NULL;
+static FILE *current_out_file = NULL;
+static Obj *current_fn = NULL;
+
+static int local_counter = 0;
+WasmLocal current_locals_head = {};
+WasmLocal *current_locals_tail = NULL;
+
+static int bb_counter = 0;
+static BasicBlock current_bbs_head = {};
+static BasicBlock *current_bbs_tail = NULL;
+static BasicBlock *current_fn_return_bb = NULL;
 static BasicBlock *current_bb = NULL;
 
 static BasicBlock *current_break_bb = NULL;
 static BasicBlock *current_continue_bb = NULL;
 
 static void gen_expr(Node *node);
+static void _gen_stmt(Node *node, bool should_drop_result);
 static void gen_stmt(Node *node);
 
 static void put_wasm(char *text) {
@@ -76,16 +88,14 @@ static void fmt_wasm(char *fmt, ...) {
 static BasicBlock *append_new_bb(void) {
   BasicBlock *bb = calloc(1, sizeof(BasicBlock));
 
-  bb->idx = current_function_bb_counter;
+  bb->idx = bb_counter;
+  bb_counter += 1;
   bb->sorted_idx = -1;
-  current_function_bb_counter += 1;
+  bb->insns_head.next = NULL;
+  bb->insns_tail = &bb->insns_head;
 
-  if (current_function_bbs_head == NULL) {
-    current_function_bbs_head = bb;
-  } else {
-    current_function_bbs_tail->next = bb;
-  }
-  current_function_bbs_tail = bb;
+  current_bbs_tail->next = bb;
+  current_bbs_tail = bb;
   return bb;
 }
 
@@ -95,16 +105,15 @@ static void set_current_bb(BasicBlock *bb) {
 
 static void put_insn(char *op) {
   if (current_bb->is_terminated) {
-    fprintf(stderr, "warning: adding insn to terminated bb\n");
+    fprintf(
+      stderr, "warning: function %s: adding insn '%s' to terminated bb bb_%d\n",
+      current_fn->name, op, current_bb->idx
+    );
   }
 
   Insn *insn = calloc(1, sizeof(Insn));
   insn->op = op;
-  if (current_bb->insns_head == NULL) {
-    current_bb->insns_head = insn;
-  } else {
-    current_bb->insns_tail->next = insn;
-  }
+  current_bb->insns_tail->next = insn;
   current_bb->insns_tail = insn;
 }
 
@@ -150,9 +159,26 @@ static void put_insn_br_if(BasicBlock *then_bb, BasicBlock *else_bb) {
   current_bb->outs[1] = else_bb;
 }
 
-static int alloc_local(void) {
-  int idx = current_function_local_counter;
-  current_function_local_counter += 1;
+static bool is_current_bb_terminated(void) {
+  return current_bb->is_terminated;
+}
+
+static void split_bb(void) {
+  BasicBlock *next_bb = append_new_bb();
+  if (!is_current_bb_terminated()) {
+    put_insn_br(next_bb);
+  }
+  set_current_bb(next_bb);
+}
+
+static int alloc_local(Type *ty) {
+  int idx = local_counter;
+  local_counter += 1;
+  WasmLocal *local = calloc(1, sizeof(WasmLocal));
+  local->ty = ty;
+  local->idx = idx;
+  current_locals_tail->next = local;
+  current_locals_tail = local;
   return idx;
 }
 
@@ -160,10 +186,6 @@ static int alloc_local(void) {
 // align_to(5, 8) returns 8 and align_to(11, 8) returns 16.
 int align_to(int n, int align) {
   return (n + align - 1) / align * align;
-}
-
-static bool is_current_bb_terminated(void) {
-  return current_bb->is_terminated;
 }
 
 static const char *get_wasm_type(Type *ty) {
@@ -181,7 +203,6 @@ static const char *get_wasm_type(Type *ty) {
   case TY_FLOAT:
     return "f32";
   case TY_DOUBLE:
-  case TY_LDOUBLE:
     return "f64";
   case TY_ENUM:
     return "i32";
@@ -219,7 +240,6 @@ static void cmp_zero(Type *ty) {
       put_insn("f32.eq");
       return;
     case TY_DOUBLE:
-    case TY_LDOUBLE:
       put_insn("f64.const 0");
       put_insn("f64.eq");
       return;
@@ -238,8 +258,10 @@ static void cmp_zero(Type *ty) {
 
 static void gen_lvar_addr(Obj *var) {
   put_insn("local.get $fp");
-  fmt_insn("i32.const %d", var->offset);
-  put_insn("i32.add");
+  if (var->offset) {
+    fmt_insn("i32.const %d", var->offset);
+    put_insn("i32.add");
+  }
 }
 
 // Compute the absolute address of a given node.
@@ -272,7 +294,9 @@ static void gen_addr(Node *node) {
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
-    // put_insn("drop");
+    if (node->lhs->ty->kind != TY_VOID) {
+      put_insn("drop");
+    }
     gen_addr(node->rhs);
     return;
   case ND_MEMBER:
@@ -326,7 +350,6 @@ static void load(Type *ty) {
     put_insn("f32.load");
     return;
   case TY_DOUBLE:
-  case TY_LDOUBLE:
     put_insn("f64.load");
     return;
   default:
@@ -364,7 +387,6 @@ static void store(Type *ty) {
     put_insn("f32.store");
     return;
   case TY_DOUBLE:
-  case TY_LDOUBLE:
     put_insn("f64.store");
     return;
   default:
@@ -403,7 +425,6 @@ static int get_type_id(Type *ty) {
   case TY_FLOAT:
     return F32;
   case TY_DOUBLE:
-  case TY_LDOUBLE:
     return F64;
   default:
     break;
@@ -470,12 +491,13 @@ static char *cast_table[][10] = {
 
 static void cast(Type *from, Type *to) {
   if (to->kind == TY_VOID) {
+    put_insn("drop");
     return;
   }
 
   if (to->kind == TY_BOOL) {
     cmp_zero(from);
-    cmp_zero(from);
+    put_insn("i32.eqz");
     return;
   }
 
@@ -497,7 +519,6 @@ static void gen_expr(Node *node) {
       fmt_insn("f32.const %f", node->fval);
       return;
     case TY_DOUBLE:
-    case TY_LDOUBLE:
       fmt_insn("f64.const %f", node->fval);
       return;
     case TY_LONGLONG:
@@ -506,26 +527,29 @@ static void gen_expr(Node *node) {
     default:
       break;
     }
-    fmt_insn("i32.const %ld", node->val);
+    fmt_insn("i32.const %d", (int32_t) node->val);
     return;
   }
   case ND_NEG: {
-    gen_expr(node->lhs);
     switch (node->ty->kind) {
     case TY_FLOAT:
+      gen_expr(node->lhs);
       put_insn("f32.neg");
       return;
     case TY_DOUBLE:
-    case TY_LDOUBLE:
+      gen_expr(node->lhs);
       put_insn("f64.neg");
       return;
     case TY_LONGLONG:
-      put_insn("i64.neg");
+      put_insn("i64.const 0");
+      gen_expr(node->lhs);
+      put_insn("i64.sub");
       return;
     default:
-      break;
+      put_insn("i32.const 0");
+      gen_expr(node->lhs);
+      put_insn("i32.sub");
     }
-    put_insn("i32.neg");
     return;
   }
   case ND_VAR:
@@ -581,17 +605,25 @@ static void gen_expr(Node *node) {
     //   return;
     // }
 
+    // XXX : Need to dup the RHS result so it is not consumed.
+    // WASM doesn't have dup so need to use a local.
+    int tmp = alloc_local(node->ty);
+    fmt_insn("local.tee %d", tmp);
     store(node->ty);
+    fmt_insn("local.get %d", tmp);
     return;
   }
   case ND_STMT_EXPR:
-    for (Node *n = node->body; n; n = n->next) {
-      gen_stmt(n);
+    for (Node *nd = node->body; nd; nd = nd->next) {
+      bool should_drop_result = (nd->next != NULL);
+      _gen_stmt(nd, should_drop_result);
     }
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
-    // put_insn("drop");
+    if (node->lhs->ty && (node->lhs->ty->kind != TY_VOID)) {
+      put_insn("drop");
+    }
     gen_expr(node->rhs);
     return;
   case ND_CAST:
@@ -601,29 +633,59 @@ static void gen_expr(Node *node) {
   case ND_MEMZERO:
     // Node is always a local var.
     gen_lvar_addr(node->var);
-    put_insn("i32.const 0");
-    fmt_insn("i32.const %d", node->var->ty->size);
-    put_insn("memory.fill");
+    if (node->var->ty->size == 4) {
+      put_insn("i32.const 0");
+      put_insn("i32.store");
+    }
+    else if (node->var->ty->size == 8) {
+      put_insn("i64.const 0");
+      put_insn("i64.store");
+    }
+    else {
+      put_insn("i32.const 0");
+      fmt_insn("i32.const %d", node->var->ty->size);
+      put_insn("memory.fill");
+    }
     return;
   case ND_COND: {
     // Ternary expression.
-    // TODO : need to alloc a local for result?
     BasicBlock *then_bb = append_new_bb();
     BasicBlock *else_bb = append_new_bb();
     BasicBlock *end_bb = append_new_bb();
+    int result = -1;
+    if (node->ty->kind != TY_VOID) {
+      result = alloc_local(node->ty);
+    }
+
+    split_bb();
     gen_expr(node->cond);
     cmp_zero(node->cond->ty);
     put_insn_br_if(else_bb, then_bb);
 
     set_current_bb(then_bb);
     gen_expr(node->then);
+    if (result >= 0) {
+      fmt_insn("local.set %d", result);
+    }
+    else if (node->then->ty->kind != TY_VOID) {
+      put_insn("drop");
+    }
     put_insn_br(end_bb);
   
     set_current_bb(else_bb);
     gen_expr(node->els);
+    if (result >= 0) {
+      fmt_insn("local.set %d", result);
+    }
+    else if (node->els->ty->kind != TY_VOID) {
+      put_insn("drop");
+    }
     put_insn_br(end_bb);
 
     set_current_bb(end_bb);
+    if (result >= 0) {
+      fmt_insn("local.get %d", result);
+    }
     return;
   }
   case ND_NOT:
@@ -633,10 +695,10 @@ static void gen_expr(Node *node) {
   case ND_BITNOT:
     gen_expr(node->lhs);
     if (node->lhs->ty->kind == TY_LONGLONG) {
-        put_insn("i64.const 0");
+        put_insn("i64.const -1");
         put_insn("i64.xor");
     } else {
-        put_insn("i32.const 0");
+        put_insn("i32.const -1");
         put_insn("i32.xor");
     }
     return;
@@ -644,11 +706,12 @@ static void gen_expr(Node *node) {
     // Logical AND with short-circuit. Skip the RHS expression if the LHS is false.
     BasicBlock *rhs_bb = append_new_bb();
     BasicBlock *end_bb = append_new_bb();
-    int cond_local = alloc_local();
+    int cond_local = alloc_local(node->ty);
+
+    split_bb();
     gen_expr(node->lhs);
     cmp_zero(node->lhs->ty);
-    fmt_insn("local.set %d", cond_local);
-    fmt_insn("local.get %d", cond_local);
+    fmt_insn("local.tee %d", cond_local);
     put_insn_br_if(end_bb, rhs_bb);
 
     set_current_bb(rhs_bb);
@@ -659,22 +722,22 @@ static void gen_expr(Node *node) {
     put_insn_br(end_bb);
 
     set_current_bb(end_bb);
-    fmt_insn("local.get %d", cond_local);
-    // if (node->ty->kind == TY_VOID) {
-    //   put_insn("drop");
-    // }
+    if (node->ty->kind != TY_VOID) {
+      fmt_insn("local.get %d", cond_local);
+    }
     return;
   }
   case ND_LOGOR: {
     // Logical OR with short-circuit. Skip the RHS expression if the LHS is true.
     BasicBlock *rhs_bb = append_new_bb();
     BasicBlock *end_bb = append_new_bb();
-    int cond_local = alloc_local();
+    int cond_local = alloc_local(node->ty);
+
+    split_bb();
     gen_expr(node->lhs);
     cmp_zero(node->lhs->ty);
     put_insn("i32.eqz");
-    fmt_insn("local.set %d", cond_local);
-    fmt_insn("local.get %d", cond_local);
+    fmt_insn("local.tee %d", cond_local);
     put_insn_br_if(end_bb, rhs_bb);
 
     set_current_bb(rhs_bb);
@@ -685,35 +748,97 @@ static void gen_expr(Node *node) {
     put_insn_br(end_bb);
 
     set_current_bb(end_bb);
-    fmt_insn("local.get %d", cond_local);
-    // if (node->ty->kind == TY_VOID) {
-    //   put_insn("drop");
-    // }
+    if (node->ty->kind != TY_VOID) {
+      fmt_insn("local.get %d", cond_local);
+    }
     return;
   }
   case ND_FUNCALL: {
-    // Build args.
-    for (Node *arg = node->args; arg; arg = arg->next) {
-      gen_expr(arg);
+    if (node->lhs->kind == ND_VAR) {
+      if (strcmp(node->lhs->var->name, "alloca") == 0) {
+        error_tok(node->tok, "alloca builtin not supported");
+        // gen_expr(node->args);
+        // builtin_alloca();
+        return;
+      }
+      else if (strcmp(node->lhs->var->name, "__builtin_memory_fill") == 0) {
+        gen_expr(node->args);
+        gen_expr(node->args->next);
+        gen_expr(node->args->next->next);
+        put_insn("memory.fill");
+        return;
+      }
+      else if (strcmp(node->lhs->var->name, "__builtin_memory_copy") == 0) {
+        gen_expr(node->args);
+        gen_expr(node->args->next);
+        gen_expr(node->args->next->next);
+        put_insn("memory.copy");
+        return;
+      }
+      else if (strcmp(node->lhs->var->name, "__builtin_memory_size") == 0) {
+        put_insn("memory.size");
+        return;
+      }
+      else if (strcmp(node->lhs->var->name, "__builtin_memory_grow") == 0) {
+        gen_expr(node->args);
+        put_insn("memory.grow");
+        return;
+      }
     }
 
+    // Build args.
+    Type *func_ty = node->func_ty;
+
     // If the return type is a struct/union, the caller passes
-    // a pointer to a stack buffer as if it were the last argument.
-    // TODO : Make it the first argument to match clang behavior.
+    // a pointer to a stack buffer as if it were the first argument.
+    // Note that function Obj's have the ret buffer inserted into their
+    // params list, but function Type's do not.
     bool returns_struct = node->ret_buffer;
     if (returns_struct) {
       gen_lvar_addr(node->ret_buffer);
     }
 
+    // Push each non-variadic arg onto the stack in left to right order.
+    Node *arg = node->args;
+    for (Type *param_ty = func_ty->params; param_ty; param_ty = param_ty->next) {
+      gen_expr(arg);
+      arg = arg->next;
+    }
+
+    // Collect remaining variadic args into the 'va_arg_area' local for this call-site.
+    if (node->va_arg_area) {
+      int offset = 0;
+      for (; arg; arg = arg->next) {
+        offset = align_to(offset, arg->ty->align);
+        gen_lvar_addr(node->va_arg_area);
+        fmt_insn("i32.const %d", offset);
+        put_insn("i32.add");
+        gen_expr(arg);
+        store(arg->ty);
+        offset += arg->ty->size;
+      }
+      gen_lvar_addr(node->va_arg_area);
+    }
+
     // Try a direct call if the LHS is a function name.
     // Otherwise do an indirect call using the function table.
     if (node->lhs->kind == ND_VAR && node->lhs->ty->kind == TY_FUNC) {
-      fmt_insn("call $%s", node->lhs->var->name);
+      Obj *fn = node->lhs->var;
+      if (fn->is_static) {
+        fmt_insn("call $%s.%d", fn->name, fn->prog->index);
+      } else {
+        fmt_insn("call $%s", fn->name);
+      }
     } else {
+      // TODO : Indirect calls. Need to add types for all functions, and add
+      // all functions to a table.
+      if (!func_ty->wasm_idx) {
+        error_tok(node->tok, "bug, no wasm type emitted for indirect function call");
+      }
       gen_expr(node->lhs);
-      put_insn("call_indirect");
+      fmt_insn("(call_indirect (type %d))", func_ty->wasm_idx - 1);
     }
-  
+
     if (returns_struct) {
       gen_lvar_addr(node->ret_buffer);
     }
@@ -761,29 +886,6 @@ static void gen_expr(Node *node) {
     // return;
     error_tok(node->tok, "exchange builtin not supported");
   }
-  case ND_ALLOCA: {
-    // Get alloca size.
-    // gen_expr(node->args);
-    // Adjust stack pointer.
-    error_tok(node->tok, "alloca builtin not supported");
-  }
-  case ND_VA_START: {
-    // gen_expr(node->args);
-    error_tok(node->tok, "va_start builtin not supported");
-  }
-  case ND_VA_COPY: {
-    // gen_expr(node->args);
-    // gen_expr(node->args->next);
-    error_tok(node->tok, "va_copy builtin not supported");
-  }
-  case ND_VA_END: {
-    // gen_expr(node->args);
-    error_tok(node->tok, "va_end builtin not supported");
-  }
-  case ND_VA_ARG: {
-    // gen_expr(node->args);
-    error_tok(node->tok, "va_arg builtin not supported");
-  }
   default:
     break;
   }
@@ -830,8 +932,7 @@ static void gen_expr(Node *node) {
     }
     error_tok(node->tok, "invalid floating point expression");
   }
-  case TY_DOUBLE:
-  case TY_LDOUBLE: {
+  case TY_DOUBLE: {
     // LHS is 64-bit float.
 
     gen_expr(node->lhs);
@@ -897,7 +998,7 @@ static void gen_expr(Node *node) {
         // ptr - int.
         // RHS should have been cast to a pointer sized int by the
         // usual arithmetic conversions.
-        put_insn("i32.add");
+        put_insn("i32.sub");
         return;
       case TY_PTR:
       case TY_FUNC:
@@ -924,10 +1025,10 @@ static void gen_expr(Node *node) {
           put_insn("i32.ne");
           return;
         case ND_LT:
-          put_insn("i32.lt");
+          put_insn("i32.lt_u");
           return;
         case ND_LE:
-          put_insn("i32.le");
+          put_insn("i32.le_u");
           return;
         default:
           break;
@@ -966,9 +1067,9 @@ static void gen_expr(Node *node) {
     return;
   case ND_MOD:
     if (node->ty->is_unsigned) {
-      put_insn("i32.mod_u");
+      put_insn("i32.rem_u");
     } else {
-      put_insn("i32.mod_a");
+      put_insn("i32.rem_s");
     }
     return;
   case ND_BITAND:
@@ -1016,12 +1117,19 @@ static void gen_expr(Node *node) {
   error_tok(node->tok, "invalid expression");
 }
 
-static void gen_stmt(Node *node) {
+static void _gen_stmt(Node *node, bool should_drop_result) {
+  // The stack size should be 0 after every statement
+  // EXCEPT if we are within a [GNU] statement expression.
+  // In that case the value of the last expression statement in
+  // the statement expression body should be left on the stack.
+
   switch (node->kind) {
   case ND_IF: {
     BasicBlock *then_bb = append_new_bb();
     BasicBlock *else_bb = append_new_bb();
     BasicBlock *end_bb = append_new_bb();
+
+    split_bb();
     gen_expr(node->cond);
     cmp_zero(node->cond->ty);
     put_insn_br_if(else_bb, then_bb);
@@ -1049,6 +1157,7 @@ static void gen_stmt(Node *node) {
     BasicBlock *end_bb = append_new_bb();
 
     if (node->init) {
+      split_bb();
       gen_stmt(node->init);
     }
     put_insn_br(cond_bb);
@@ -1088,6 +1197,7 @@ static void gen_stmt(Node *node) {
     BasicBlock *loop_bb = append_new_bb();
     BasicBlock *end_bb = append_new_bb();
 
+    // no need to split here.
     put_insn_br(loop_bb);
 
     set_current_bb(loop_bb);
@@ -1116,10 +1226,12 @@ static void gen_stmt(Node *node) {
     // However if there are GNU case ranges then we need to check those, and if they don't match
     // go to the default block.
 
+    split_bb();
+
     // Switch condition value.
     gen_expr(node->cond);
-    int cond_local = alloc_local();
-    fmt_insn("set.local %d", cond_local);
+    int cond_local = alloc_local(node->cond->ty);
+    fmt_insn("local.set %d", cond_local);
 
     // Generate branches to case labels.
     BasicBlock *next_bb = NULL;
@@ -1128,7 +1240,7 @@ static void gen_stmt(Node *node) {
       
       nd->goto_bb = append_new_bb();
 
-      fmt_insn("get.local %d", cond_local);
+      fmt_insn("local.get %d", cond_local);
       if (nd->begin == nd->end) {
         // Normal single integer case.
         if (is_i64) {
@@ -1145,16 +1257,16 @@ static void gen_stmt(Node *node) {
           fmt_insn("i64.const %ld", nd->begin);
           put_insn("i64.sub");
           fmt_insn("i64.const %ld", nd->end - nd->begin);
-          put_insn("i64.le");
+          put_insn("i64.le_s");
         } else {
           fmt_insn("i32.const %ld", nd->begin);
           put_insn("i32.sub");
           fmt_insn("i32.const %ld", nd->end - nd->begin);
-          put_insn("i32.le");
+          put_insn("i32.le_s");
         }
       }
       next_bb = append_new_bb();
-      put_insn_br_if(node->goto_bb, next_bb);
+      put_insn_br_if(nd->goto_bb, next_bb);
       set_current_bb(next_bb);
     }
 
@@ -1166,6 +1278,11 @@ static void gen_stmt(Node *node) {
     } else {
       put_insn_br(end_bb);
     }
+
+    // We terminated the current BB above, so need a new BB for the first
+    // switch body statement.
+    next_bb = append_new_bb();
+    set_current_bb(next_bb);
 
     BasicBlock *prev_break_bb = current_break_bb;
     current_break_bb = end_bb;
@@ -1241,34 +1358,37 @@ static void gen_stmt(Node *node) {
     // XXX: This is a bad solution :(
     BasicBlock *next_bb = append_new_bb();
     if (!node->lhs) {
-      put_insn_br(current_function_return_bb);
+      put_insn_br(current_fn_return_bb);
       set_current_bb(next_bb);
       return;
     }
     Type *ty = node->lhs->ty;
     bool returns_struct = (ty->kind == TY_STRUCT) || (ty->kind == TY_UNION);
     if (returns_struct) {
-      // Structure returns are written to the buffer pointed to by the last arg.
-      Obj *ret_buffer_var = NULL;
-      for (Obj *param = current_function->params; param; param = param->next) {
-        ret_buffer_var = param;
-      }
+      // Structure returns are written to the buffer pointed to by the first param.
+      // (the hidden first param is inserted by the parser).
+      Obj *ret_buffer_var = current_fn->params;
       gen_lvar_addr(ret_buffer_var);
       gen_addr(node->lhs);
       fmt_insn("i32.const %d", ty->size);
       put_insn("memory.copy");
-      put_insn_br(current_function_return_bb);
+      put_insn_br(current_fn_return_bb);
       set_current_bb(next_bb);
       return;
     }
     gen_expr(node->lhs);
     put_insn("local.set $result");
-    put_insn_br(current_function_return_bb);
+    put_insn_br(current_fn_return_bb);
     set_current_bb(next_bb);
     return;
   }
   case ND_EXPR_STMT:
     gen_expr(node->lhs);
+    if (should_drop_result) {
+      if (node->lhs->ty && (node->lhs->ty->kind != TY_VOID)) {
+        put_insn("drop");
+      }
+    }
     return;
   case ND_ASM:
     error_tok(node->tok, "inline asm not supported");
@@ -1278,6 +1398,10 @@ static void gen_stmt(Node *node) {
   }
 
   error_tok(node->tok, "invalid statement");
+}
+
+static void gen_stmt(Node *node) {
+  _gen_stmt(node, true);
 }
 
 static int get_bitset_size(int count) {
@@ -1294,17 +1418,18 @@ static void bitset_free(uint8_t *bitset) {
 
 static void bitset_fill(uint8_t *bitset, bool val, int count) {
   int size = get_bitset_size(count);
-  if (size > 1) {
-    memset(bitset, val ? 0xff : 0, size - 1);
+  if (size == 0) {
+    return;
   }
   int n = count % 8;
-  if (n != 0) {
-    if (val) {
-      bitset[size - 1] |= 0xff >> (8 - n);
-    } else {
-      bitset[size - 1] = 0;
-    }
+  if (n == 0 || !val) {
+    memset(bitset, (val) ? 0xff : 0, size);
+    return;
   }
+  if (size > 1) {
+    memset(bitset, 0xff, size - 1);
+  }
+  bitset[size - 1] = 0xff >> (8 - n);
 }
 
 static void bitset_copy(uint8_t *bitset1, uint8_t *bitset2, int count) {
@@ -1323,21 +1448,17 @@ static void bitset_set(uint8_t *bitset, unsigned int index, bool val) {
   }
 }
 
-static int bitset_popcnt(uint8_t *bitset, int count) {
-  // TODO : optimize.
-  int popcnt = 0;
-  for (int i = 0; i < count; i++) {
-    if (bitset_get(bitset, i)) {
-      popcnt += 1;
-    }
-  }
-  return popcnt;
-}
-
 static void bitset_intersect(uint8_t *bitset1, uint8_t *bitset2, int count) {
   int size = get_bitset_size(count);
   for (int i = 0; i < size; i++) {
     bitset1[i] &= bitset2[i];
+  }
+}
+
+static void bitset_union(uint8_t *bitset1, uint8_t *bitset2, int count) {
+  int size = get_bitset_size(count);
+  for (int i = 0; i < size; i++) {
+    bitset1[i] |= bitset2[i];
   }
 }
 
@@ -1361,18 +1482,22 @@ static IntVector *intvector_new() {
 
 static void intvector_push(IntVector *vec, int val) {
   if (vec->length >= vec->capacity) {
-    int capacity = vec->capacity * 2;
+    int capacity = vec->capacity;
     if (capacity < 8) {
       capacity = 8;
     }
+    while (vec->length >= capacity) {
+      capacity *= 2;
+    }
     int *data = calloc(capacity, sizeof(int));
     if (vec->data && (vec->length > 0)) {
-      memcpy(data, vec->data, vec->length);
+      memcpy(data, vec->data, vec->length * sizeof(int));
     }
     if (vec->data) {
       free(vec->data);
     }
     vec->data = data;
+    vec->capacity = capacity;
   }
   vec->data[vec->length++] = val;
 }
@@ -1400,16 +1525,37 @@ static void intvector_free(IntVector *vec) {
 
 static void compute_cfg_ins(BasicBlock **bbs, int bb_count) {
   // Compute predecessors for each BB.
+  uint8_t *tmp = bitset_new(bb_count);
   for (int i = 0; i < bb_count; i++) {
-    bbs[i]->ins_set = bitset_new(bb_count);
-  }
-  for (int i = 0; i < bb_count; i++) {
+    bitset_fill(tmp, false, bb_count);
     BasicBlock *bb = bbs[i];
-    for (int j = 0; j < bb->outs_count; j++) {
-      BasicBlock *bb2 = bb->outs[j];
-      bitset_set(bb2->ins_set, i, true);
+    bb->ins_count = 0;
+    bb->ins = NULL;
+    for (int j = 0; j < bb_count; j++) {
+      BasicBlock *bb2 = bbs[j];
+      for (int k = 0; k < bb2->outs_count; k++) {
+        BasicBlock *bb3 = bb2->outs[k];
+        if (bb3->idx == bb->idx) {
+          if (!bitset_get(tmp, j)) {
+            bb->ins_count += 1;
+            bitset_set(tmp, j, true);
+          }
+        }
+      }
+    }
+    if (bb->ins_count <= 0) {
+      continue;
+    }
+    bb->ins = calloc(bb->ins_count, sizeof(BasicBlock*));
+    int ins_pos = 0;
+    for (int j = 0; j < bb_count; j++) {
+      if (bitset_get(tmp, j)) {
+        bb->ins[ins_pos] = bbs[j];
+        ins_pos += 1;
+      }
     }
   }
+  bitset_free(tmp);
 }
 
 static void compute_cfg_dominators(BasicBlock **bbs, int bb_count) {
@@ -1420,12 +1566,13 @@ static void compute_cfg_dominators(BasicBlock **bbs, int bb_count) {
   // First initialize dominator sets.
   // The entry point only ever has itself as a dominator.
   for (int i = 0; i < bb_count; i++) {
-    bbs[i]->dominators_set = bitset_new(bb_count);
+    BasicBlock *bb = bbs[i];
+    bb->dominators_set = bitset_new(bb_count);
     if (i == 0) {
-      bitset_fill(bbs[i]->dominators_set, false, bb_count);
-      bitset_set(bbs[i]->dominators_set, 0, true);
+      bitset_fill(bb->dominators_set, false, bb_count);
+      bitset_set(bb->dominators_set, 0, true);
     } else {
-      bitset_fill(bbs[i]->dominators_set, true, bb_count);
+      bitset_fill(bb->dominators_set, true, bb_count);
     }
   }
 
@@ -1438,16 +1585,48 @@ static void compute_cfg_dominators(BasicBlock **bbs, int bb_count) {
   while (1) {
     bool change = false;
     for (int i = 1; i < bb_count; i++) {
+      BasicBlock *bb = bbs[i];
       bitset_fill(tmp, true, bb_count);
-      for (int j = 0; j < bb_count; j++) {
-        if (bitset_get(bbs[i]->ins_set, j)) {
-          bitset_intersect(tmp, bbs[j]->dominators_set, bb_count);
-        }
+      for (int j = 0; j < bb->ins_count; j++) {
+        BasicBlock *bb2 = bb->ins[j];
+        bitset_intersect(tmp, bb2->dominators_set, bb_count);
       }
       bitset_set(tmp, i, true);
-      if (!is_bitset_equal(bbs[i]->dominators_set, tmp, bb_count)) {
+      if (!is_bitset_equal(bb->dominators_set, tmp, bb_count)) {
         change = true;
-        bitset_copy(bbs[i]->dominators_set, tmp, bb_count);
+        bitset_copy(bb->dominators_set, tmp, bb_count);
+      }
+    }
+    if (!change) {
+      break;
+    }
+  }
+  bitset_free(tmp);
+}
+
+
+static void compute_cfg_reachability(BasicBlock **bbs, int bb_count) {
+  // Compute the set of reachable BB's for each BB.
+  // Similar algorithm to computing the dominator tree above.
+  for (int i = 0; i < bb_count; i++) {
+    BasicBlock *bb = bbs[i];
+    bb->reachable_set = bitset_new(bb_count);
+    bitset_fill(bb->reachable_set, false, bb_count);
+  }
+  uint8_t *tmp = bitset_new(bb_count);
+  while (1) {
+    bool change = false;
+    for (int i = 1; i < bb_count; i++) {
+      BasicBlock *bb = bbs[i];
+      bitset_fill(tmp, false, bb_count);
+      for (int j = 0; j < bb->outs_count; j++) {
+        BasicBlock *bb2 = bb->outs[j];
+        bitset_union(tmp, bb2->reachable_set, bb_count);
+      }
+      bitset_set(tmp, i, true);
+      if (!is_bitset_equal(bb->reachable_set, tmp, bb_count)) {
+        change = true;
+        bitset_copy(bb->reachable_set, tmp, bb_count);
       }
     }
     if (!change) {
@@ -1488,6 +1667,10 @@ static void compute_cfg_backward_edges(BasicBlock **bbs, int bb_count) {
 
 static bool bb_is_dominated_by(BasicBlock *bb1, BasicBlock *bb2) {
   return bitset_get(bb1->dominators_set, bb2->idx);
+}
+
+static bool bb_can_reach(BasicBlock *bb1, BasicBlock *bb2) {
+  return bitset_get(bb1->reachable_set, bb2->idx);
 }
 
 static bool compute_cfg_is_reducible(BasicBlock **bbs, int bb_count) {
@@ -1548,6 +1731,7 @@ static void topological_sort(
   }
 }
 
+#if DEBUG_STACKIFIER
 static void dump_bbs(BasicBlock **bbs, int bb_count) {
   for (int i = 0; i < bb_count; i++) {
     BasicBlock *bb = bbs[i];
@@ -1561,20 +1745,25 @@ static void dump_bbs(BasicBlock **bbs, int bb_count) {
     else {
       fprintf(stderr, "[] ");
     }
-    int ins_count = 0;
-    if (bb->ins_set) {
-      ins_count = bitset_popcnt(bb->ins_set, bb_count);
+    fprintf(stderr, "ins=[");
+    for (int j = 0; j < bb->ins_count; j++) {
+      fprintf(stderr, "bb_%d, ", bb->ins[j]->idx);
     }
-    int doms_count = 0;
-    if (bb->dominators_set) {
-      doms_count = bitset_popcnt(bb->dominators_set, bb_count);
+    fprintf(stderr, "] doms=[");
+    if (bb->dominators_set != NULL) {
+      for (int j = 0; j < bb_count; j++) {
+        if (bitset_get(bb->dominators_set, j)) {
+          fprintf(stderr, "bb_%d, ", j);
+        }
+      }
     }
     fprintf(
-      stderr, "ins=%d doms=%d is_loop_header=%d sorted_idx=%d\n",
-      ins_count, doms_count, (int) bb->is_loop_header, bb->sorted_idx
+      stderr, "] is_loop_header=%d sorted_idx=%d\n",
+      (int) bb->is_loop_header, bb->sorted_idx
     );
   }
 }
+#endif
 
 static int qsort_cmp_scope(const void *p1, const void *p2) {
   // Comparison callback for qsort.
@@ -1610,15 +1799,16 @@ static void stackify(BasicBlock *bb_list_head) {
 
   compute_cfg_ins(bbs, bb_count);
   compute_cfg_dominators(bbs, bb_count);
+  compute_cfg_reachability(bbs, bb_count);
   compute_cfg_backward_edges(bbs, bb_count);
   bool is_reducible = compute_cfg_is_reducible(bbs, bb_count);
 
   if (!is_reducible) {
-    fprintf(stderr, "warning: stackifier: CFG is not reducible!\n");
+    fprintf(stderr, "warning: stackifier: CFG for %s is not reducible!\n", current_fn->name);
   }
 
-  fprintf(stderr, "stackifier: bbs unsorted:\n");
-  dump_bbs(bbs, bb_count);
+  // fprintf(stderr, "%s: bbs unsorted:\n", current_fn->name);
+  // dump_bbs(bbs, bb_count);
 
   // Topological sort.
   // Note that unreachable nodes will be left out of the sorted set.
@@ -1628,6 +1818,8 @@ static void stackify(BasicBlock *bb_list_head) {
 
   // Move all BBs that are part of a loop to just beneath their loop header
   // in the topologically sorted BB list.
+  // TODO : additionally check that the block is part of the loop cycle.
+  // i.e. the loop header is reachable from this BB.
   for (int i = 0; i < bb_sorted_count; i++) {
     BasicBlock *bb = bbs_sorted[i];
     if (!bb->is_loop_header) {
@@ -1641,7 +1833,7 @@ static void stackify(BasicBlock *bb_list_head) {
     int k = i + 1;
     for (int j = i + 1; j < bb_sorted_count; j++) {
       BasicBlock *bb2 = bbs_sorted[j];
-      if (!bb_is_dominated_by(bb2, bb)) {
+      if (!bb_can_reach(bb2, bb) || !bb_is_dominated_by(bb2, bb)) {
         continue;
       }
       // bb2 is part of loop. Need to move bb2 to bbs[k].
@@ -1663,8 +1855,45 @@ static void stackify(BasicBlock *bb_list_head) {
     bbs_sorted[i]->sorted_idx = i;
   }
 
-  fprintf(stderr, "stackifier: bbs sorted:\n");
+  // Check sort conditions satisfied.
+  for (int i = 0; i < bb_sorted_count; i++) {
+    BasicBlock *bb = bbs_sorted[i];
+    for (int j = 0; j < bb->forward_outs_count; j++) {
+      BasicBlock *bb2 = bb->forward_outs[j];
+      if (bb2->sorted_idx <= i) {
+        fprintf(
+          stderr, "error: function %s: bb_%d should be before bb_%d in the sorted order",
+          current_fn->name, bb->idx, bb2->idx
+        );
+      }
+    }
+    if (!bb->is_loop_header) {
+      continue;
+    }
+    bool should_be_loop = true;
+    for (int j = i + 1; j < bb_sorted_count; j++) {
+      BasicBlock *bb2 = bbs_sorted[j];
+      bool is_bb2_in_loop = bb_can_reach(bb2, bb) && bb_is_dominated_by(bb2, bb);
+      if (should_be_loop) {
+        if (!is_bb2_in_loop) {
+          should_be_loop = false;
+        }
+      }
+      else {
+        if (is_bb2_in_loop) {
+          fprintf(
+            stderr, "error: function %s: bb_%d is part of loop bb_%d, but is not contiguous with "
+            "other loop blocks\n", current_fn->name, bb2->idx, bb->idx
+          );
+        }
+      }
+    }
+  }
+
+#if DEBUG_STACKIFIER
+  fprintf(stderr, "%s: bbs sorted:\n", current_fn->name);
   dump_bbs(bbs_sorted, bb_sorted_count);
+#endif
 
   // Enclose each loop in a loop scope (while(1) { /*...*/ }).
   // All back edges become 'continue' statements.
@@ -1678,32 +1907,29 @@ static void stackify(BasicBlock *bb_list_head) {
   // Note that only one loop can start on a node, but multiple loops can end on a node.
   // Multiple block scopes can start on a node, but only one block scope can end on a node.
 
-  StackifierScope *scopes_head = NULL;
-  StackifierScope *scopes_tail = NULL;
+  StackifierScope scopes_head = {};
+  StackifierScope *scopes_tail = &scopes_head;
   
   // Find loop scopes.
   IntVector *loop_stack = intvector_new();
   for (int i = 0; i < bb_sorted_count; i++) {
     BasicBlock *bb = bbs_sorted[i];
     // Check for end of loop.
+    // TODO : should the end of loop be at the last back edge? 
     while (loop_stack->length > 0) {
       int loop_header_idx = intvector_get(loop_stack, loop_stack->length - 1);
       BasicBlock *loop_header_bb = bbs_sorted[loop_header_idx];
-      if (bb_is_dominated_by(bb, loop_header_bb)) {
+      if (bb_can_reach(bb, loop_header_bb) && bb_is_dominated_by(bb, loop_header_bb)) {
         // Still in loop.
         break;
       }
+      // fprintf(stderr, "bb_%d not part of loop bb_%d\n", bb->idx, loop_header_bb->idx);
       // This is the first block that is not part of the loop.
-      fprintf(stderr, "add loop scope: start=%d end=%d\n", loop_header_idx, i);
       StackifierScope *scope = calloc(1, sizeof(StackifierScope));
       scope->kind = SCOPE_LOOP; 
       scope->start = loop_header_idx;
       scope->end = i;
-      if (scopes_head) {
-        scopes_tail->next = scope;
-      } else {
-        scopes_head = scope;
-      }
+      scopes_tail->next = scope;
       scopes_tail = scope;
       intvector_pop(loop_stack);
     }
@@ -1712,6 +1938,18 @@ static void stackify(BasicBlock *bb_list_head) {
     if (bb->is_loop_header) {
       intvector_push(loop_stack, i);
     }
+  }
+
+  // Add remaining loop scopes.
+  while (loop_stack->length > 0) {
+      int loop_header_idx = intvector_get(loop_stack, loop_stack->length - 1);
+      StackifierScope *scope = calloc(1, sizeof(StackifierScope));
+      scope->kind = SCOPE_LOOP; 
+      scope->start = loop_header_idx;
+      scope->end = bb_sorted_count;
+      scopes_tail->next = scope;
+      scopes_tail = scope;
+      intvector_pop(loop_stack);
   }
 
   intvector_free(loop_stack);
@@ -1738,7 +1976,6 @@ static void stackify(BasicBlock *bb_list_head) {
       int block_end = bb2->sorted_idx;
       if (block_first_breaks[block_end] < 0) {
         block_first_breaks[block_end] = i;
-        fprintf(stderr, "block first break: break=%d end=%d\n", i, block_end);
       }
     }
   }
@@ -1757,7 +1994,7 @@ static void stackify(BasicBlock *bb_list_head) {
         continue;
       }
       int new_start = first_break;
-      for (StackifierScope *scope = scopes_head; scope; scope = scope->next) {
+      for (StackifierScope *scope = scopes_head.next; scope; scope = scope->next) {
         // The loop scope ends before the BB at scope->end.
         // The block scope ends before the BB at i.
         if ((scope->end > first_break) && (scope->end <= i)) {
@@ -1793,16 +2030,11 @@ static void stackify(BasicBlock *bb_list_head) {
     if (start < 0) {
       continue;
     }
-    fprintf(stderr, "add block scope: start=%d end=%d\n", start, end);
     StackifierScope *scope = calloc(1, sizeof(StackifierScope));
     scope->kind = SCOPE_BLOCK; 
     scope->start = start;
     scope->end = end;
-    if (scopes_head) {
-      scopes_tail->next = scope;
-    } else {
-      scopes_head = scope;
-    }
+    scopes_tail->next = scope;
     scopes_tail = scope;
   }
 
@@ -1811,21 +2043,40 @@ static void stackify(BasicBlock *bb_list_head) {
 
   // Sort scopes in descending order of end position.
   // We want to enter scopes that end later first.
+  // TODO : Instead of using qsort, just insert into the scopes linked list
+  // in the correct order.
   int scope_count = 0;
-  for (StackifierScope *scope = scopes_head; scope; scope = scope->next) {
+  for (StackifierScope *scope = scopes_head.next; scope; scope = scope->next) {
     scope_count += 1;
   }
   StackifierScope **scopes = calloc(scope_count, sizeof(StackifierScope*));
   int scope_index = 0;
-  for (StackifierScope *scope = scopes_head; scope; scope = scope->next) {
+  for (StackifierScope *scope = scopes_head.next; scope; scope = scope->next) {
     scopes[scope_index++] = scope;
   }
   qsort(scopes, scope_count, sizeof(StackifierScope*), qsort_cmp_scope);
+
+#if DEBUG_STACKIFIER
+  fprintf(stderr, "bbs: %s: unsorted=%d sorted=%d\n", current_fn->name, bb_count, bb_sorted_count);
+  fprintf(stderr, "scopes: %s:\n", current_fn->name);
+  for (int i = 0; i < scope_count; i++) {
+    StackifierScope *scope = scopes[i];
+    fprintf(
+      stderr, "  [%d] %s %d->%d (bb_%d->bb_%d)\n",
+      i, (scope->kind == SCOPE_LOOP) ? "loop" : "block", scope->start, scope->end,
+      bbs_sorted[scope->start]->idx,
+      (scope->end >= bb_sorted_count) ? -1 : bbs_sorted[scope->end]->idx
+    );
+  }
+#endif
 
   // Output WASM.
   // int depth = 0;
   IntVector *scope_stack = intvector_new();
   for (int i = 0; i < bb_sorted_count; i++) {
+
+    // fprintf(stderr, "  %d: scope_stack=%d\n", i, scope_stack->length);
+
     while (scope_stack->length > 0) {
       int scope_index = intvector_get(scope_stack, scope_stack->length - 1);
       StackifierScope *scope = scopes[scope_index];
@@ -1834,6 +2085,7 @@ static void stackify(BasicBlock *bb_list_head) {
       }
       // depth -= 1;
       put_wasm("  )\n");
+      // fprintf(stderr, "  %d: pop scope %d %d\n", i, scope->start, scope->end);
       intvector_pop(scope_stack);
     }
 
@@ -1847,13 +2099,25 @@ static void stackify(BasicBlock *bb_list_head) {
       } else {
         fmt_wasm("  (block $bb_%d\n", bbs_sorted[scope->end]->idx);
       }
+      // Check if scopes are interleaved.
+      if (scope_stack->length > 0) {
+        int parent_scope_index = intvector_get(scope_stack, scope_stack->length - 1);
+        StackifierScope *parent_scope = scopes[parent_scope_index];
+        if (scope->end > parent_scope->end) {
+          fprintf(
+            stderr, "warning: function %s: scopes interleaved parent=%d->%d new=%d->%d\n",
+            current_fn->name, parent_scope->start, parent_scope->end, scope->start, scope->end
+          );
+        }
+      }
       // depth += 1;
+      // fprintf(stderr, "  %d: push scope %d %d\n", i, scope->start, scope->end);
       intvector_push(scope_stack, scope_index);
     }
 
     BasicBlock *bb = bbs_sorted[i];
     fmt_wasm("    ;; bb_%d\n", bb->idx);
-    for (Insn *insn = bb->insns_head; insn; insn = insn->next) {
+    for (Insn *insn = bb->insns_head.next; insn; insn = insn->next) {
       if (insn->next == NULL) {
         // Terminator instruction.
         if (bb->outs_count == 0) {
@@ -1902,12 +2166,34 @@ static void stackify(BasicBlock *bb_list_head) {
     }
   }
 
-  // Cleanup.
-  for (int i = 0; i < bb_count; i++) {
-    bitset_free(bbs[i]->ins_set);
-    bitset_free(bbs[i]->dominators_set);
+  // Close remaining scopes (should only ever be loop scopes remaining).
+  if (scope_stack->length > 0) {
+    while (scope_stack->length > 0) {
+      int scope_index = intvector_get(scope_stack, scope_stack->length - 1);
+      StackifierScope *scope = scopes[scope_index];
+      if (scope->end != bb_sorted_count) {
+        fprintf(
+          stderr, "error: function %s: unclosed scope %d->%d at end of function\n",
+          current_fn->name, scope->start, scope->end
+        );
+      }
+      // depth -= 1;
+      put_wasm("  )\n");
+      intvector_pop(scope_stack);
+    }
+    put_wasm("    unreachable\n");
   }
-  StackifierScope *scope = scopes_head;
+
+  // Cleanup.
+  intvector_free(scope_stack);
+  for (int i = 0; i < bb_count; i++) {
+    if (bbs[i]->ins != NULL) {
+      free(bbs[i]->ins);
+    }
+    bitset_free(bbs[i]->dominators_set);
+    bitset_free(bbs[i]->reachable_set);
+  }
+  StackifierScope *scope = scopes_head.next;
   while (scope) {
     StackifierScope *scope_next = scope->next;
     free(scope);
@@ -1918,15 +2204,13 @@ static void stackify(BasicBlock *bb_list_head) {
   free(bbs);
 }
 
-#define WASM_PAGE_SIZE 4096
+#define WASM_PAGE_SIZE 65536
 #define WASM_DATA_START 1024
 #define WASM_STACK_SIZE 65536
 
-static int calculate_gvar_offsets(Obj *prog) {
-  int data_offset = WASM_DATA_START;
-
+static void calculate_gvar_offsets(Obj *prog_obj, int *data_offset) {
   // First calculate offsets and indexes of global vars.
-  for (Obj *var = prog; var; var = var->next) {
+  for (Obj *var = prog_obj; var; var = var->next) {
     if (var->is_function) {
       continue;
     }
@@ -1934,74 +2218,130 @@ static int calculate_gvar_offsets(Obj *prog) {
       continue;
     }
 
-    data_offset = align_to(data_offset, var->ty->align);
-    var->offset = data_offset;
+    *data_offset = align_to(*data_offset, var->ty->align);
+    var->offset = *data_offset;
 
-    data_offset += var->ty->size;
+    *data_offset += var->ty->size;
   }
-
-  return data_offset;
 }
 
-static void emit_imports(Obj *prog) {
-  int type_index = 0;
-  for (Obj *fn = prog; fn; fn = fn->next) {
-    if (!fn->is_function) {
+static void get_exports(Obj *prog_obj, StringArray *exports) {
+  // Collect all exported function and global var names.
+  for (Obj *var = prog_obj; var; var = var->next) {
+    if (!var->is_definition || var->is_static) {
       continue;
     }
-    
-    // No code is emitted for "static" functions if no one is referencing them.
-    if (!fn->is_live) {
+    strarray_push(exports, var->name);
+  }
+}
+
+static void emit_types(Obj *prog_obj, int *type_idx) {
+  for (Obj *fn = prog_obj; fn; fn = fn->next) {
+    if (!fn->is_live || !fn->is_definition) {
+      continue;
+    }
+    for (Node *node = fn->funcalls; node; node = node->funcall_next) {
+      Type *ty = node->func_ty;
+      if (ty->wasm_idx) {
+        continue;
+      }
+
+      fmt_wasm("(type (;%d;) (func (param", *type_idx);
+      for (Type *param_ty = ty->params; param_ty; param_ty = param_ty->next) {
+        fmt_wasm(" %s", get_wasm_type(param_ty));
+      }
+      // If variadic add a pointer to the va_arg_area buffer.
+      if (fn->va_area) {
+        fmt_wasm(" i32");
+      }
+      if (ty->return_ty->kind != TY_VOID) {
+        fmt_wasm(") (result %s)))\n", get_wasm_type(ty->return_ty));
+      } else {
+        put_wasm(")))\n");
+      }
+
+      ty->wasm_idx = *type_idx + 1;
+      *type_idx += 1;
+    }
+  }
+}
+
+static void emit_imports(Obj *prog_obj, StringArray *exports, int *type_idx) {
+  for (Obj *fn = prog_obj; fn; fn = fn->next) {
+    // Functions without a definition are imports.
+    // All static funtions should have definitions.
+    if (!fn->is_live || fn->is_static || fn->is_definition) {
       continue;
     }
 
-    // Functions without a definition are imports.
-    if (fn->is_definition) {
-      continue;
+    // Check if this is a function exported by another translation unit.
+    bool skip = false;
+    for (int i = 0; i < exports->len; i++) {
+      if (strcmp(exports->data[i], fn->name) == 0) {
+        skip = true;
+        break;
+      }
+    }
+    if (skip) {
+      break;
     }
 
     // Imported function. Add function type and import.
-    Type *return_ty = fn->ty->return_ty;
-    // bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
+    // TODO : add extra param for functions returning struct.
+    if (fn->is_function) {
+      Type *return_ty = fn->ty->return_ty;
+      // bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
 
-    fmt_wasm("(type (;%d;) (func (param", type_index);
-    for (Type *param_ty = fn->ty->params; param_ty; param_ty = param_ty->next) {
-      fmt_wasm(" %s", get_wasm_type(param_ty));
+      fmt_wasm("(type (;%d;) (func (param", *type_idx);
+      for (Type *param_ty = fn->ty->params; param_ty; param_ty = param_ty->next) {
+        fmt_wasm(" %s", get_wasm_type(param_ty));
+      }
+      // If variadic add a pointer to the va_arg_area buffer.
+      if (fn->va_area) {
+        fmt_wasm(" i32");
+      }
+      if (return_ty->kind != TY_VOID) {
+        fmt_wasm(") (result %s)))\n", get_wasm_type(return_ty));
+      } else {
+        put_wasm(")))\n");
+      }
+      fmt_wasm(
+        "(import \"wasi_snapshot_preview1\" \"%s\" (func $%s (type %d)))\n",
+        fn->name, fn->name, *type_idx
+      );
+      *type_idx += 1;
     }
-    if (return_ty->kind != TY_VOID) {
-      fmt_wasm(") (result %s)))\n", get_wasm_type(return_ty));
-    } else {
-      put_wasm(")))\n");
+    else {
+      // TODO : imported global vars.
+      error("global var imports not supported");
     }
-    fmt_wasm(
-      "(import \"wasi_snapshot_preview1\" \"%s\" (func $%s (type %d)))\n",
-      fn->name, fn->name, type_index
-    );
-    type_index += 1;
   }
 }
 
-static void emit_funcs(Obj *prog) {
-  for (Obj *fn = prog; fn; fn = fn->next) {
+static void emit_funcs(Obj *prog_obj) {
+  for (Obj *fn = prog_obj; fn; fn = fn->next) {
     if (!fn->is_function || !fn->is_live || !fn->is_definition) {
       continue;
     }
   
-    current_function = fn;
-    current_function_local_counter = 0;
-    current_function_bb_counter = 0;
-    current_function_bbs_head = NULL;
-    current_function_bbs_tail = NULL;
+    current_fn = fn;
+    local_counter = 0;
+    bb_counter = 0;
+    current_bbs_head.next = NULL;
+    current_bbs_tail = &current_bbs_head;
+    current_locals_head.next = NULL;
+    current_locals_tail = &current_locals_head;
 
     BasicBlock *entry_bb = append_new_bb();
     current_bb = entry_bb;
 
-    current_function_return_bb = append_new_bb();
+    current_fn_return_bb = append_new_bb();
 
     int frame_offset = 0;
 
     Type *return_ty = fn->ty->return_ty;
     bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
+    bool has_result = ((return_ty->kind != TY_VOID) && !returns_struct);
 
     // Count params.
     int param_count = 0;
@@ -2027,10 +2367,14 @@ static void emit_funcs(Obj *prog) {
     put_insn("local.get $fp");
     put_insn("global.set $__stack_pointer");
     
-    current_function_local_counter += 1;
-    if ((return_ty->kind != TY_VOID) && !returns_struct) {
-      // put_insn("local.set $result 0");
-      current_function_local_counter += 1;
+    // Increment local counter for params, hidden va_arg_area param, $fp, and $result.
+    local_counter += param_count;
+    if (fn->va_area) {
+      local_counter += 1;
+    }
+    local_counter += 1;
+    if (has_result) {
+      local_counter += 1;
     }
 
     // Copy params to stack frame.
@@ -2042,6 +2386,15 @@ static void emit_funcs(Obj *prog) {
       fmt_insn("local.get $p%d", param_count);
       store(var->ty);
       param_count++;
+    }
+
+    // For variadic functions setup the hidden __va_area__ local var.
+    // The last parameter (also hidden) is a pointer to a stack buffer in the
+    // callers stack frame that contains the variadic args.
+    if (fn->va_area) {
+      gen_lvar_addr(fn->va_area);
+      fmt_insn("local.get $p%d", param_count);
+      put_insn("i32.store");
     }
 
     // Emit function body.
@@ -2087,86 +2440,144 @@ static void emit_funcs(Obj *prog) {
         // Return uninitialized value.
         // TODO : ???
       }
-      put_insn_br(current_function_return_bb);
+      put_insn_br(current_fn_return_bb);
     }
 
     // Emit function epilogue.
-    set_current_bb(current_function_return_bb);
+    set_current_bb(current_fn_return_bb);
     put_insn("local.get $fp");
     fmt_insn("i32.const %d", frame_offset);
     put_insn("i32.add");
     put_insn("global.set $__stack_pointer");
-    if ((return_ty->kind != TY_VOID) && !returns_struct) {
+    if (has_result) {
       put_insn("local.get $result");
     }
     put_insn_return();
 
-    fmt_wasm("(func $%s\n", fn->name);
+    if (fn->is_static) {
+      fmt_wasm("(func $%s.%d\n", fn->name, fn->prog->index);
+    } else {
+      fmt_wasm("(func $%s\n", fn->name);
+    }
+    // ret_buffer hidden parameter for returning structs is included in
+    // fn->params.
     param_count = 0;
     for (Obj *var = fn->params; var; var = var->next) {
       fmt_wasm("  (param $p%d %s)\n", param_count, get_wasm_type(var->ty));
       param_count += 1;
     }
-    if (returns_struct) {
+
+    if (fn->va_area) {
       fmt_wasm("  (param $p%d i32)\n", param_count);
+      param_count += 1;
     }
-    else if (return_ty->kind != TY_VOID) {
+
+    if (has_result) {
       fmt_wasm("  (result %s)\n", get_wasm_type(return_ty));
     }
 
-    int local_index = 0;
     put_wasm("  (local $fp i32)\n");
-    local_index += 1;
-    if ((return_ty->kind != TY_VOID) && !returns_struct) {
+    if (has_result) {
       fmt_wasm("  (local $result %s)\n", get_wasm_type(return_ty));
-      local_index += 1;
     }
-    for (; local_index < current_function_local_counter; local_index++) {
-      fmt_wasm("  (local (;%d;) i32)\n", param_count + local_index);
+    for (WasmLocal *local = current_locals_head.next; local; local = local->next) {
+      fmt_wasm("  (local (;%d;) %s)\n", local->idx, get_wasm_type(local->ty));
     }
 
-    stackify(current_function_bbs_head);
+    stackify(current_bbs_head.next);
 
     put_wasm(")\n");
 
-    current_function = NULL;
-    current_function_local_counter = 0;
-    current_function_bb_counter = 0;
-    current_function_bbs_head = NULL;
-    current_function_bbs_tail = NULL;
-    current_function_return_bb = NULL;
+    current_fn = NULL;
+    local_counter = 0;
+    bb_counter = 0;
+    current_bbs_head.next = NULL;
+    current_bbs_tail = NULL;
+    current_fn_return_bb = NULL;
+    current_locals_head.next = NULL;
+    current_locals_tail = NULL;
   }
 }
 
-static void emit_exports(Obj *prog) {
-  put_wasm("(export \"memory\" (memory 0))\n");
-  for (Obj *fn = prog; fn; fn = fn->next) {
+static void calculate_func_table_indices(Obj *prog_obj, int *table_idx) {
+  for (Obj *fn = prog_obj; fn; fn = fn->next) {
+    if (!fn->is_function || !fn->is_live || !fn->is_definition) {
+      continue;
+    }
+    fn->offset = *table_idx;
+    *table_idx += 1;
+  }
+}
+
+static void emit_func_table_elems(Obj *prog_obj) {
+  for (Obj *fn = prog_obj; fn; fn = fn->next) {
+    if (!fn->is_function || !fn->is_live || !fn->is_definition) {
+      continue;
+    }
+    if (fn->is_static) {
+      fmt_wasm("(elem (i32.const %d) $%s.%d)\n", fn->offset, fn->name, fn->prog->index);
+    } else {
+      fmt_wasm("(elem (i32.const %d) $%s)\n", fn->offset, fn->name);
+    }
+  }
+}
+
+static void emit_exports(Obj *prog_obj) {
+  // Function exports for non-static, defined functions.
+  // TODO : global var exports.
+  for (Obj *fn = prog_obj; fn; fn = fn->next) {
     if (!fn->is_function || !fn->is_live || !fn->is_definition || fn->is_static) {
       continue;
     }
-    // Add export for non-static defined functions.
     fmt_wasm("(export \"%s\" (func $%s))\n", fn->name, fn->name);
   }
 }
 
-static void emit_gvars(Obj *prog, int data_end_offset) {
-  // Stack starts after global variables.
-  int stack_start_offset = align_to(data_end_offset, WASM_PAGE_SIZE);
-  int stack_end_offset = stack_start_offset + WASM_STACK_SIZE;
-  int memory_size = align_to(stack_end_offset, WASM_PAGE_SIZE);
+static int encode_name(char *buf, size_t buf_size, const char *s) {
+  int pos = 0;
+  while (*s) {
+    int c = *s;
+    s++;
+    if (
+      (c >= '0' && c <= '9') ||
+      (c >= 'A' && c <= 'Z') ||
+      (c >= 'a' && c <= 'z') ||
+      (c == '_') || (c == '.')
+    ) {
+      if (pos < buf_size) {
+        buf[pos] = c;
+      }
+      pos += 1;
+    }
+    else {
+      for (int i = 0; i < 2; i++) {
+        int n = (c >> 4) & 0xf;
+        c <<= 4;
+        char hex;
+        if (n < 10) {
+          hex = '0' + n;
+        } else {
+          hex = 'a' + n - 10;
+        }
+        if (pos < buf_size) {
+          buf[pos] = hex;
+        }
+        pos += 1;
+      }
+    }
+  }
+  if (pos < buf_size) {
+    buf[pos] = 0;
+  }
+  else if (buf_size > 0) {
+    buf[buf_size - 1] = 0;
+  }
+  return pos;
+}
 
-  // Memory size in 4096 B pages.
-  fmt_wasm("(memory %d)\n", memory_size / WASM_PAGE_SIZE);
-
-  // Stack pointer is always the first global.
-
-  fmt_wasm(
-    "(global $__stack_pointer (mut i32) (i32.const %d))\n",
-    stack_end_offset
-  );
-
+static void emit_globals(Obj *prog_obj) {
   // Add '(global ...)' definitions.
-  for (Obj *var = prog; var; var = var->next) {
+  for (Obj *var = prog_obj; var; var = var->next) {
     if (var->is_function) {
       continue;
     }
@@ -2190,11 +2601,25 @@ static void emit_gvars(Obj *prog, int data_end_offset) {
     if (var->is_tls) {  
     }
 
-    fmt_wasm("(global $%s i32 (i32.const %d))\n", var->name, var->offset);
+    // TODO : need to encode names to safe characters (no unicode).
+    // The names get lost when converting to binary anyway, so can remove? Use numeric IDs?
+    int n = encode_name(NULL, 0, var->name);
+    char *encoded_name = calloc(n + 1, sizeof(char));
+    encode_name(encoded_name, n + 1, var->name);
+    if (var->is_static) {
+      fmt_wasm(
+        "(global $%s.%d i32 (i32.const %d))\n", encoded_name, var->prog->index, var->offset
+      );
+    } else {
+      fmt_wasm("(global $%s i32 (i32.const %d))\n", encoded_name, var->offset);
+    }
+    free(encoded_name);
   }
+}
 
+static void emit_data(Obj *prog_obj) {
   // Add '(data ...)' memory initialization data for global vars with initializers.
-  for (Obj *var = prog; var; var = var->next) {
+  for (Obj *var = prog_obj; var; var = var->next) {
     if (var->is_function || !var->is_definition || !var->init_data) {
       continue;
     }
@@ -2214,7 +2639,12 @@ static void emit_gvars(Obj *prog, int data_end_offset) {
         );
         pos += 4;
       } else {
-        fmt_wasm("\\%02x", var->init_data[pos]);
+        uint8_t c = var->init_data[pos] & 0xff;
+        if (c >= 0x20 && c <= 0x7e && c != '\\' && c != '"') {
+          fmt_wasm("%c", c);
+        } else {
+          fmt_wasm("\\%02x", var->init_data[pos]);
+        }
         pos += 1;
       }
     }
@@ -2222,14 +2652,81 @@ static void emit_gvars(Obj *prog, int data_end_offset) {
   }
 }
 
-void codegen(Obj *prog, FILE *out) {
+void codegen(Prog *progs, FILE *out) {
   current_out_file = out;
+
+  int data_offset = WASM_DATA_START;
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    calculate_gvar_offsets(prog->obj, &data_offset);
+  }
+  int data_end_offset = data_offset;
+
+  StringArray exports = {};
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    get_exports(prog->obj, &exports);
+  }
+
   put_wasm("(module $module0\n");
-  int data_end_offset = calculate_gvar_offsets(prog);
-  emit_imports(prog);
-  emit_funcs(prog);
-  emit_exports(prog);
-  emit_gvars(prog, data_end_offset);
+
+  // Canonical order is:
+  //  types, imports, funcs, tables, memory, globals, exports, start, elems,
+  //  datacounts, code, data
+
+  int type_idx = 0;
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_types(prog->obj, &type_idx);
+  }
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_imports(prog->obj, &exports, &type_idx);
+  }
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_funcs(prog->obj);
+  }
+
+  int table_idx = 0;
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    calculate_func_table_indices(prog->obj, &table_idx);
+  }
+
+  fmt_wasm("(table %d funcref)\n", table_idx);
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_func_table_elems(prog->obj);
+  }
+
+  // Stack starts after global variables.
+  int stack_start_offset = align_to(data_end_offset, WASM_PAGE_SIZE);
+  int stack_end_offset = stack_start_offset + WASM_STACK_SIZE;
+  int memory_size = align_to(stack_end_offset, WASM_PAGE_SIZE);
+
+  // Memory size in 4096 B pages.
+  fmt_wasm("(memory %d)\n", memory_size / WASM_PAGE_SIZE);
+
+  // Stack pointer is always the first global.
+  fmt_wasm(
+    "(global $__stack_pointer (mut i32) (i32.const %d))\n",
+    stack_end_offset
+  );
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_globals(prog->obj);
+  }
+
+  // Add "memory" export (WASI requirement).
+  put_wasm("(export \"memory\" (memory 0))\n");
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_exports(prog->obj);
+  }
+
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    emit_data(prog->obj);
+  }
+
   put_wasm(")\n");
+  
   current_out_file = NULL;
 }

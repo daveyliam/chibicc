@@ -17,7 +17,6 @@ Type *ty_ulonglong = &(Type){TY_LONGLONG, 8, 8, true};
 
 Type *ty_float = &(Type){TY_FLOAT, 4, 4};
 Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
-Type *ty_ldouble = &(Type){TY_LDOUBLE, 16, 16};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));
@@ -35,8 +34,7 @@ bool is_integer(Type *ty) {
 }
 
 bool is_flonum(Type *ty) {
-  return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE ||
-         ty->kind == TY_LDOUBLE;
+  return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE;
 }
 
 bool is_numeric(Type *ty) {
@@ -65,7 +63,6 @@ bool is_compatible(Type *t1, Type *t2) {
     return t1->is_unsigned == t2->is_unsigned;
   case TY_FLOAT:
   case TY_DOUBLE:
-  case TY_LDOUBLE:
     return true;
   case TY_PTR:
     return is_compatible(t1->base, t2->base);
@@ -146,8 +143,6 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
   if (ty2->kind == TY_FUNC)
     return pointer_to(ty2);
 
-  if (ty1->kind == TY_LDOUBLE || ty2->kind == TY_LDOUBLE)
-    return ty_ldouble;
   if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE)
     return ty_double;
   if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT)
@@ -316,20 +311,6 @@ void add_type(Node *node) {
     if (node->lhs->ty->kind != TY_PTR)
       error_tok(node->lhs->tok, "pointer expected");
     node->ty = node->lhs->ty->base;
-    return;
-  case ND_ALLOCA:
-    if (!is_integer(node->args->ty)) {
-      error_tok(node->args->tok, "integer expected");
-    }
-    node->ty = pointer_to(ty_void);
-    return;
-  case ND_VA_START:
-  case ND_VA_COPY:
-  case ND_VA_END:
-    node->ty = ty_void;
-    return;
-  case ND_VA_ARG:
-    node->ty = node->arg_ty;
     return;
   default:
     break;

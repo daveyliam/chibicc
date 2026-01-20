@@ -26,6 +26,7 @@
 #endif
 
 #define PTR_SIZE 4
+#define VA_AREA_SIZE 4
 
 typedef struct Type Type;
 typedef struct Node Node;
@@ -33,6 +34,7 @@ typedef struct Member Member;
 typedef struct Relocation Relocation;
 typedef struct Hideset Hideset;
 typedef struct BasicBlock BasicBlock;
+typedef struct Prog Prog;
 
 //
 // strings.c
@@ -45,6 +47,7 @@ typedef struct {
 } StringArray;
 
 void strarray_push(StringArray *arr, char *s);
+void strarray_free(StringArray *arr);
 char *format(char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 //
@@ -102,11 +105,11 @@ bool equal(Token *tok, char *op);
 Token *skip(Token *tok, char *op);
 bool consume(Token **rest, Token *tok, char *str);
 void convert_pp_tokens(Token *tok);
-File **get_input_files(void);
 File *new_file(char *name, int file_no, char *contents);
 Token *tokenize_string_literal(Token *tok, Type *basety);
 Token *tokenize(File *file);
 Token *tokenize_file(char *filename);
+void reset_tokenize(void);
 
 #define unreachable() \
   error("internal error at %s:%d", __FILE__, __LINE__)
@@ -120,6 +123,7 @@ void init_macros(void);
 void define_macro(char *name, char *buf);
 void undef_macro(char *name);
 Token *preprocess(Token *tok);
+void reset_preprocess(void);
 
 //
 // parse.c
@@ -128,6 +132,7 @@ Token *preprocess(Token *tok);
 // Variable or function
 typedef struct Obj Obj;
 struct Obj {
+  Obj *gc_next;
   Obj *next;
   char *name;    // Variable name
   Type *ty;      // Type
@@ -136,6 +141,7 @@ struct Obj {
   int align;     // alignment
 
   // Global variable or function
+  Prog *prog;
   bool is_function;
   bool is_definition;
   bool is_static;
@@ -158,9 +164,11 @@ struct Obj {
   Obj *params;
   Node *body;
   Obj *locals;
+  Obj *va_area;
   int stack_size;
   Node *gotos;
   Node *labels;
+  Node *funcalls;
   BasicBlock *bbs;
 
   // Static inline function
@@ -232,11 +240,6 @@ typedef enum {
   ND_ASM,       // "asm"
   ND_CAS,       // Atomic compare-and-swap
   ND_EXCH,      // Atomic exchange
-  ND_ALLOCA,
-  ND_VA_START,
-  ND_VA_COPY,
-  ND_VA_END,
-  ND_VA_ARG,
 } NodeKind;
 
 // AST node type
@@ -266,6 +269,8 @@ struct Node {
   Type *func_ty;
   Node *args;
   Obj *ret_buffer;
+  Obj *va_arg_area;
+  Node *funcall_next;
 
   // Goto or labeled statement, or labels-as-values
   char *label;
@@ -306,6 +311,7 @@ struct Node {
 Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
 Obj *parse(Token *tok);
+void reset_parse(void);
 
 //
 // type.c
@@ -321,7 +327,6 @@ typedef enum {
   TY_LONGLONG,
   TY_FLOAT,
   TY_DOUBLE,
-  TY_LDOUBLE,
   TY_ENUM,
   TY_PTR,
   TY_FUNC,
@@ -370,6 +375,9 @@ struct Type {
   Type *params;
   bool is_variadic;
   Type *next;
+
+  // WASM type index.
+  int wasm_idx;
 };
 
 // Struct member
@@ -405,7 +413,6 @@ extern Type *ty_ulonglong;
 
 extern Type *ty_float;
 extern Type *ty_double;
-extern Type *ty_ldouble;
 
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);
@@ -424,7 +431,14 @@ void add_type(Node *node);
 // codegen.c
 //
 
-void codegen(Obj *prog, FILE *out);
+struct Prog {
+  Prog *next;
+  Obj *obj;
+  char *base_file;
+  int index;
+};
+
+void codegen(Prog *progs, FILE *out);
 int align_to(int n, int align);
 
 //
@@ -459,6 +473,7 @@ void hashmap_put(HashMap *map, char *key, void *val);
 void hashmap_put2(HashMap *map, char *key, int keylen, void *val);
 void hashmap_delete(HashMap *map, char *key);
 void hashmap_delete2(HashMap *map, char *key, int keylen);
+void hashmap_clear(HashMap *map);
 void hashmap_test(void);
 
 //
@@ -468,6 +483,5 @@ void hashmap_test(void);
 bool file_exists(char *path);
 
 extern StringArray include_paths;
-extern bool opt_fpic;
-extern bool opt_fcommon;
 extern char *base_file;
+extern Prog *current_prog;

@@ -3,14 +3,13 @@
 // Input file
 static File *current_file;
 
-// A list of all input files.
-static File **input_files;
-
 // True if the current position is at the beginning of a line
 static bool at_bol;
 
 // True if the current position follows a space character
 static bool has_space;
+
+static int tokenize_file_no;
 
 // Reports an error and exit.
 void error(char *fmt, ...) {
@@ -87,7 +86,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
 
 // Consumes the current token if it matches `op`.
 bool equal(Token *tok, char *op) {
-  return memcmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
+  return strncmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
 }
 
 // Ensure that the current token is `op`.
@@ -448,7 +447,7 @@ static void convert_pp_number(Token *tok) {
     ty = ty_float;
     end++;
   } else if (*end == 'l' || *end == 'L') {
-    ty = ty_ldouble;
+    ty = ty_double;
     end++;
   } else {
     ty = ty_double;
@@ -684,10 +683,6 @@ static char *read_file(char *path) {
   return buf;
 }
 
-File **get_input_files(void) {
-  return input_files;
-}
-
 File *new_file(char *name, int file_no, char *contents) {
   File *file = calloc(1, sizeof(File));
   file->name = name;
@@ -801,15 +796,16 @@ Token *tokenize_file(char *path) {
   remove_backslash_newline(p);
   convert_universal_chars(p);
 
-  // Save the filename for assembler .file directive.
-  static int file_no;
-  File *file = new_file(path, file_no + 1, p);
-
-  // Save the filename for assembler .file directive.
-  input_files = realloc(input_files, sizeof(char *) * (file_no + 2));
-  input_files[file_no] = file;
-  input_files[file_no + 1] = NULL;
-  file_no++;
+  // Tokens keep a reference to the file for formatting error messages.
+  File *file = new_file(path, tokenize_file_no + 1, p);
+  tokenize_file_no += 1;
 
   return tokenize(file);
+}
+
+void reset_tokenize(void) {
+  current_file = NULL;
+  at_bol = false;
+  has_space = false;
+  tokenize_file_no = 0;
 }

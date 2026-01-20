@@ -48,6 +48,9 @@ static void rehash(HashMap *map) {
       hashmap_put2(&map2, ent->key, ent->keylen, ent->val);
   }
 
+  if (map->buckets) {
+    free(map->buckets);
+  }
   assert(map2.used == nkeys);
   *map = map2;
 }
@@ -131,6 +134,13 @@ void hashmap_delete2(HashMap *map, char *key, int keylen) {
   HashEntry *ent = get_entry(map, key, keylen);
   if (ent)
     ent->key = TOMBSTONE;
+}
+
+void hashmap_clear(HashMap *map) {
+  if (map->buckets) {
+    free(map->buckets);
+  }
+  memset(map, 0, sizeof(HashMap));
 }
 
 void hashmap_test(void) {

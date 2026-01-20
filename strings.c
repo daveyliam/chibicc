@@ -16,6 +16,13 @@ void strarray_push(StringArray *arr, char *s) {
   arr->data[arr->len++] = s;
 }
 
+void strarray_free(StringArray *arr) {
+  if (arr->data) {
+    free(arr->data);
+    arr->data = NULL;
+  }
+}
+
 // Takes a printf-style format string and returns a formatted string.
 char *format(char *fmt, ...) {
   char *buf;

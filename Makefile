@@ -1,10 +1,12 @@
-CFLAGS:=-std=c11 -g -fno-common -Wall -Werror -fPIC
+CFLAGS:=-std=c11 -g -O1 -fno-omit-frame-pointer -fno-common -Wall -Werror -fPIC
+
+# CFLAGS += -fsanitize=address
 
 SRCS:=$(wildcard *.c)
 OBJS:=$(patsubst %.c,build/%.o,$(SRCS))
 
 TEST_SRCS:=$(filter-out test/common.c, $(wildcard test/*.c))
-TESTS:=$(patsubst test/%.c,build/test/%.exe,$(TEST_SRCS))
+TESTS:=$(patsubst test/%.c,build/test/%.wasm,$(TEST_SRCS))
 
 CC:=clang
 
@@ -18,18 +20,13 @@ chibicc: $(OBJS)
 $(OBJS): build/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-build/test/%.o: test/%.c chibicc
-	./chibicc -Iinclude -Itest -S -o build/test/$*.wat $<
-	wat2wasm build/test/$*.wat -o build/test/$*.wasm
-	wasm-validate build/test/$*.wasm
-	cp build/test/$*.wasm $@
-#	./chibicc -Iinclude -Itest -c -o $@ $<
-
-build/test/%.exe: build/test/%.o build/test/common.o
-	$(CC) -pthread -o $@ $^
+build/test/%.wasm: test/%.c chibicc
+	./chibicc -Itest -o build/test/$*.wat $< test/common.c libc/libc.c
+	wat2wasm --debug-names --debug-parser build/test/$*.wat -o $@
+	wasm-validate $@
 
 test: $(TESTS)
-	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
+	for i in $^; do echo $$i; wasmtime ./$$i || exit 1; echo; done
 	test/driver.sh ./chibicc
 
 # test-all: test test-stage2
@@ -43,7 +40,7 @@ test: $(TESTS)
 # 	mkdir -p stage2/test
 # 	./chibicc -c -o $(@D)/$*.o $*.c
 
-# stage2/test/%.exe: stage2/chibicc test/%.c
+# stage2/test/%.wasm: stage2/chibicc test/%.c
 # 	mkdir -p stage2/test
 # 	./stage2/chibicc -Iinclude -Itest -c -o stage2/test/$*.o test/$*.c
 # 	$(CC) -pthread -o $@ stage2/test/$*.o -xc test/common
