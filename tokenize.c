@@ -24,8 +24,8 @@ void error(char *fmt, ...) {
 //
 // foo.c:10: x = y + 1;
 //               ^ <error message here>
-static void verror_at(char *filename, char *input, int line_no,
-                      char *loc, char *fmt, va_list ap) {
+static void verror_at(char *filename, char *input, int line_no, char *loc,
+                      char *fmt, va_list ap) {
   // Find a line containing `loc`.
   char *line = loc;
   while (input < line && line[-1] != '\n')
@@ -68,7 +68,8 @@ void error_tok(Token *tok, char *fmt, ...) {
     fprintf(stderr, "\n");
     exit(1);
   }
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt,
+            ap);
   exit(1);
 }
 
@@ -80,7 +81,8 @@ void warn_tok(Token *tok, char *fmt, ...) {
     fprintf(stderr, "\n");
     exit(1);
   }
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt,
+            ap);
   va_end(ap);
 }
 
@@ -91,8 +93,9 @@ bool equal(Token *tok, char *op) {
 
 // Ensure that the current token is `op`.
 Token *skip(Token *tok, char *op) {
-  if (!equal(tok, op))
+  if (!equal(tok, op)) {
     error_tok(tok, "expected '%s'", op);
+  }
   return tok->next;
 }
 
@@ -152,9 +155,8 @@ static int from_hex(char c) {
 // Read a punctuator token from p and returns its length.
 static int read_punct(char *p) {
   static char *kw[] = {
-    "<<=", ">>=", "...", "==", "!=", "<=", ">=", "->", "+=",
-    "-=", "*=", "/=", "++", "--", "%=", "&=", "|=", "^=", "&&",
-    "||", "<<", ">>", "##",
+      "<<=", ">>=", "...", "==", "!=", "<=", ">=", "->", "+=", "-=", "*=", "/=",
+      "++",  "--",  "%=",  "&=", "|=", "^=", "&&", "||", "<<", ">>", "##",
   };
 
   for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
@@ -169,14 +171,21 @@ static bool is_keyword(Token *tok) {
 
   if (map.capacity == 0) {
     static char *kw[] = {
-      "return", "if", "else", "for", "while", "int", "sizeof", "char",
-      "struct", "union", "short", "long", "void", "typedef", "_Bool",
-      "enum", "static", "goto", "break", "continue", "switch", "case",
-      "default", "extern", "_Alignof", "_Alignas", "do", "signed",
-      "unsigned", "const", "volatile", "auto", "register", "restrict",
-      "__restrict", "__restrict__", "_Noreturn", "float", "double",
-      "typeof", "asm", "_Thread_local", "__thread", "_Atomic",
-      "__attribute__",
+        "return",    "if",         "else",
+        "for",       "while",      "int",
+        "sizeof",    "char",       "struct",
+        "union",     "short",      "long",
+        "void",      "typedef",    "_Bool",
+        "enum",      "static",     "goto",
+        "break",     "continue",   "switch",
+        "case",      "default",    "extern",
+        "_Alignof",  "_Alignas",   "do",
+        "signed",    "unsigned",   "const",
+        "volatile",  "auto",       "register",
+        "restrict",  "__restrict", "__restrict__",
+        "_Noreturn", "float",      "double",
+        "typeof",    "asm",        "_Thread_local",
+        "__thread",  "_Atomic",    "__attribute__",
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
@@ -226,16 +235,25 @@ static int read_escaped_char(char **new_pos, char *p) {
   // For more info, read "Reflections on Trusting Trust" by Ken Thompson.
   // https://github.com/rui314/chibicc/wiki/thompson1984.pdf
   switch (*p) {
-  case 'a': return '\a';
-  case 'b': return '\b';
-  case 't': return '\t';
-  case 'n': return '\n';
-  case 'v': return '\v';
-  case 'f': return '\f';
-  case 'r': return '\r';
+  case 'a':
+    return '\a';
+  case 'b':
+    return '\b';
+  case 't':
+    return '\t';
+  case 'n':
+    return '\n';
+  case 'v':
+    return '\v';
+  case 'f':
+    return '\f';
+  case 'r':
+    return '\r';
   // [GNU] \e for the ASCII escape character is a GNU C extension.
-  case 'e': return 27;
-  default: return *p;
+  case 'e':
+    return 27;
+  default:
+    return *p;
   }
 }
 
@@ -369,9 +387,8 @@ static bool convert_pp_int(Token *tok) {
   bool l = false;
   bool u = false;
 
-  if (startswith(p, "LLU") || startswith(p, "LLu") ||
-      startswith(p, "llU") || startswith(p, "llu") ||
-      startswith(p, "ULL") || startswith(p, "Ull") ||
+  if (startswith(p, "LLU") || startswith(p, "LLu") || startswith(p, "llU") ||
+      startswith(p, "llu") || startswith(p, "ULL") || startswith(p, "Ull") ||
       startswith(p, "uLL") || startswith(p, "ull")) {
     p += 3;
     l = u = true;

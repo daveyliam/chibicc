@@ -22,7 +22,7 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #ifndef __GNUC__
-# define __attribute__(x)
+#define __attribute__(x)
 #endif
 
 #define PTR_SIZE 4
@@ -78,14 +78,14 @@ typedef struct {
 // Token type
 typedef struct Token Token;
 struct Token {
-  TokenKind kind;   // Token kind
-  Token *next;      // Next token
-  int64_t val;      // If kind is TK_NUM, its value
-  double fval;      // If kind is TK_NUM, its value
-  char *loc;        // Token location
-  int len;          // Token length
-  Type *ty;         // Used if TK_NUM or TK_STR
-  char *str;        // String literal contents including terminating '\0'
+  TokenKind kind; // Token kind
+  Token *next;    // Next token
+  int64_t val;    // If kind is TK_NUM, its value
+  double fval;    // If kind is TK_NUM, its value
+  char *loc;      // Token location
+  int len;        // Token length
+  Type *ty;       // Used if TK_NUM or TK_STR
+  char *str;      // String literal contents including terminating '\0'
 
   File *file;       // Source location
   char *filename;   // Filename
@@ -98,8 +98,10 @@ struct Token {
 };
 
 noreturn void error(char *fmt, ...) __attribute__((format(printf, 1, 2)));
-noreturn void error_at(char *loc, char *fmt, ...) __attribute__((format(printf, 2, 3)));
-noreturn void error_tok(Token *tok, char *fmt, ...) __attribute__((format(printf, 2, 3)));
+noreturn void error_at(char *loc, char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+noreturn void error_tok(Token *tok, char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 void warn_tok(Token *tok, char *fmt, ...) __attribute__((format(printf, 2, 3)));
 bool equal(Token *tok, char *op);
 Token *skip(Token *tok, char *op);
@@ -111,8 +113,7 @@ Token *tokenize(File *file);
 Token *tokenize_file(char *filename);
 void reset_tokenize(void);
 
-#define unreachable() \
-  error("internal error at %s:%d", __FILE__, __LINE__)
+#define unreachable() error("internal error at %s:%d", __FILE__, __LINE__)
 
 //
 // preprocess.c
@@ -249,8 +250,8 @@ struct Node {
   Type *ty;      // Type, e.g. int or pointer to int
   Token *tok;    // Representative token
 
-  Node *lhs;     // Left-hand side
-  Node *rhs;     // Right-hand side
+  Node *lhs; // Left-hand side
+  Node *rhs; // Right-hand side
 
   // "if" or "for" statement
   Node *cond;
@@ -338,11 +339,11 @@ typedef enum {
 
 struct Type {
   TypeKind kind;
-  int size;           // sizeof() value
-  int align;          // alignment
-  bool is_unsigned;   // unsigned or signed
-  bool is_atomic;     // true if _Atomic
-  Type *origin;       // for type compatibility check
+  int size;         // sizeof() value
+  int align;        // alignment
+  bool is_unsigned; // unsigned or signed
+  bool is_atomic;   // true if _Atomic
+  Type *origin;     // for type compatibility check
 
   // Pointer-to or array-of type. We intentionally use the same member
   // to represent pointer/array duality in C.
@@ -474,7 +475,6 @@ void hashmap_put2(HashMap *map, char *key, int keylen, void *val);
 void hashmap_delete(HashMap *map, char *key);
 void hashmap_delete2(HashMap *map, char *key, int keylen);
 void hashmap_clear(HashMap *map);
-void hashmap_test(void);
 
 //
 // main.c

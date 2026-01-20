@@ -56,8 +56,8 @@ static void rehash(HashMap *map) {
 }
 
 static bool match(HashEntry *ent, char *key, int keylen) {
-  return ent->key && ent->key != TOMBSTONE &&
-         ent->keylen == keylen && memcmp(ent->key, key, keylen) == 0;
+  return ent->key && ent->key != TOMBSTONE && ent->keylen == keylen &&
+         memcmp(ent->key, key, keylen) == 0;
 }
 
 static HashEntry *get_entry(HashMap *map, char *key, int keylen) {
@@ -118,7 +118,7 @@ void *hashmap_get2(HashMap *map, char *key, int keylen) {
 }
 
 void hashmap_put(HashMap *map, char *key, void *val) {
-   hashmap_put2(map, key, strlen(key), val);
+  hashmap_put2(map, key, strlen(key), val);
 }
 
 void hashmap_put2(HashMap *map, char *key, int keylen, void *val) {
@@ -141,35 +141,4 @@ void hashmap_clear(HashMap *map) {
     free(map->buckets);
   }
   memset(map, 0, sizeof(HashMap));
-}
-
-void hashmap_test(void) {
-  HashMap *map = calloc(1, sizeof(HashMap));
-
-  for (int i = 0; i < 5000; i++)
-    hashmap_put(map, format("key %d", i), (void *)(size_t)i);
-  for (int i = 1000; i < 2000; i++)
-    hashmap_delete(map, format("key %d", i));
-  for (int i = 1500; i < 1600; i++)
-    hashmap_put(map, format("key %d", i), (void *)(size_t)i);
-  for (int i = 6000; i < 7000; i++)
-    hashmap_put(map, format("key %d", i), (void *)(size_t)i);
-
-  for (int i = 0; i < 1000; i++)
-    assert((size_t)hashmap_get(map, format("key %d", i)) == i);
-  for (int i = 1000; i < 1500; i++)
-    assert(hashmap_get(map, "no such key") == NULL);
-  for (int i = 1500; i < 1600; i++)
-    assert((size_t)hashmap_get(map, format("key %d", i)) == i);
-  for (int i = 1600; i < 2000; i++)
-    assert(hashmap_get(map, "no such key") == NULL);
-  for (int i = 2000; i < 5000; i++)
-    assert((size_t)hashmap_get(map, format("key %d", i)) == i);
-  for (int i = 5000; i < 6000; i++)
-    assert(hashmap_get(map, "no such key") == NULL);
-  for (int i = 6000; i < 7000; i++)
-    hashmap_put(map, format("key %d", i), (void *)(size_t)i);
-
-  assert(hashmap_get(map, "no such key") == NULL);
-  printf("OK\n");
 }

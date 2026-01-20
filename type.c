@@ -28,18 +28,15 @@ static Type *new_type(TypeKind kind, int size, int align) {
 
 bool is_integer(Type *ty) {
   TypeKind k = ty->kind;
-  return k == TY_BOOL || k == TY_CHAR || k == TY_SHORT ||
-         k == TY_INT  || k == TY_LONG || k == TY_LONGLONG ||
-         k == TY_ENUM;
+  return k == TY_BOOL || k == TY_CHAR || k == TY_SHORT || k == TY_INT ||
+         k == TY_LONG || k == TY_LONGLONG || k == TY_ENUM;
 }
 
 bool is_flonum(Type *ty) {
   return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE;
 }
 
-bool is_numeric(Type *ty) {
-  return is_integer(ty) || is_flonum(ty);
-}
+bool is_numeric(Type *ty) { return is_integer(ty) || is_flonum(ty); }
 
 bool is_compatible(Type *t1, Type *t2) {
   if (t1 == t2)
@@ -126,13 +123,9 @@ Type *vla_of(Type *base, Node *len) {
   return ty;
 }
 
-Type *enum_type(void) {
-  return new_type(TY_ENUM, 4, 4);
-}
+Type *enum_type(void) { return new_type(TY_ENUM, 4, 4); }
 
-Type *struct_type(void) {
-  return new_type(TY_STRUCT, 0, 1);
-}
+Type *struct_type(void) { return new_type(TY_STRUCT, 0, 1); }
 
 static Type *get_common_type(Type *ty1, Type *ty2) {
   if (ty1->base)
@@ -291,7 +284,8 @@ void add_type(Node *node) {
         return;
       }
     }
-    error_tok(node->tok, "statement expression returning void is not supported");
+    error_tok(node->tok,
+              "statement expression returning void is not supported");
     return;
   case ND_LABEL_VAL:
     node->ty = pointer_to(ty_void);

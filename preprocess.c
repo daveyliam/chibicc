@@ -76,9 +76,7 @@ static HashMap include_guards;
 static Token *preprocess2(Token *tok);
 static Macro *find_macro(Token *tok);
 
-static bool is_hash(Token *tok) {
-  return tok->at_bol && equal(tok, "#");
-}
+static bool is_hash(Token *tok) { return tok->at_bol && equal(tok, "#"); }
 
 // Some preprocessor directives such as #include allow extraneous
 // tokens before newline. This function skips such tokens.
@@ -166,9 +164,8 @@ static Token *append(Token *tok1, Token *tok2) {
 
 static Token *skip_cond_incl2(Token *tok) {
   while (tok->kind != TK_EOF) {
-    if (is_hash(tok) &&
-        (equal(tok->next, "if") || equal(tok->next, "ifdef") ||
-         equal(tok->next, "ifndef"))) {
+    if (is_hash(tok) && (equal(tok->next, "if") || equal(tok->next, "ifdef") ||
+                         equal(tok->next, "ifndef"))) {
       tok = skip_cond_incl2(tok->next->next);
       continue;
     }
@@ -183,16 +180,14 @@ static Token *skip_cond_incl2(Token *tok) {
 // Nested `#if` and `#endif` are skipped.
 static Token *skip_cond_incl(Token *tok) {
   while (tok->kind != TK_EOF) {
-    if (is_hash(tok) &&
-        (equal(tok->next, "if") || equal(tok->next, "ifdef") ||
-         equal(tok->next, "ifndef"))) {
+    if (is_hash(tok) && (equal(tok->next, "if") || equal(tok->next, "ifdef") ||
+                         equal(tok->next, "ifndef"))) {
       tok = skip_cond_incl2(tok->next->next);
       continue;
     }
 
-    if (is_hash(tok) &&
-        (equal(tok->next, "elif") || equal(tok->next, "else") ||
-         equal(tok->next, "endif")))
+    if (is_hash(tok) && (equal(tok->next, "elif") || equal(tok->next, "else") ||
+                         equal(tok->next, "endif")))
       break;
     tok = tok->next;
   }
@@ -335,7 +330,8 @@ static Macro *add_macro(char *name, bool is_objlike, Token *body) {
   return m;
 }
 
-static MacroParam *read_macro_params(Token **rest, Token *tok, char **va_args_name) {
+static MacroParam *read_macro_params(Token **rest, Token *tok,
+                                     char **va_args_name) {
   MacroParam head = {};
   MacroParam *cur = &head;
 
@@ -419,8 +415,8 @@ static MacroArg *read_macro_arg_one(Token **rest, Token *tok, bool read_rest) {
   return arg;
 }
 
-static MacroArg *
-read_macro_args(Token **rest, Token *tok, MacroParam *params, char *va_args_name) {
+static MacroArg *read_macro_args(Token **rest, Token *tok, MacroParam *params,
+                                 char *va_args_name) {
   Token *start = tok;
   tok = tok->next->next;
 
@@ -445,7 +441,8 @@ read_macro_args(Token **rest, Token *tok, MacroParam *params, char *va_args_name
         tok = skip(tok, ",");
       arg = read_macro_arg_one(&tok, tok, true);
     }
-    arg->name = va_args_name;;
+    arg->name = va_args_name;
+    ;
     arg->is_va_args = true;
     cur = cur->next = arg;
   } else if (pp) {
@@ -707,7 +704,8 @@ char *search_include_paths(char *filename) {
 
 static char *search_include_next(char *filename) {
   for (; include_next_idx < include_paths.len; include_next_idx++) {
-    char *path = format("%s/%s", include_paths.data[include_next_idx], filename);
+    char *path =
+        format("%s/%s", include_paths.data[include_next_idx], filename);
     if (file_exists(path))
       return path;
   }
@@ -773,7 +771,8 @@ static char *detect_include_guard(Token *tok) {
   char *macro = strndup(tok->loc, tok->len);
   tok = tok->next;
 
-  if (!is_hash(tok) || !equal(tok->next, "define") || !equal(tok->next->next, macro))
+  if (!is_hash(tok) || !equal(tok->next, "define") ||
+      !equal(tok->next->next, macro))
     return NULL;
 
   // Read until the end of the file.
@@ -863,7 +862,8 @@ static Token *preprocess2(Token *tok) {
       char *filename = read_include_filename(&tok, tok->next, &is_dquote);
 
       if (filename[0] != '/' && is_dquote) {
-        char *path = format("%s/%s", dirname(strdup(start->file->name)), filename);
+        char *path =
+            format("%s/%s", dirname(strdup(start->file->name)), filename);
         if (file_exists(path)) {
           tok = include_file(tok, path, start->next->next);
           continue;
@@ -996,9 +996,7 @@ void define_macro(char *name, char *buf) {
   add_macro(name, true, tok);
 }
 
-void undef_macro(char *name) {
-  hashmap_delete(&macros, name);
-}
+void undef_macro(char *name) { hashmap_delete(&macros, name); }
 
 static Macro *add_builtin(char *name, macro_handler_fn *fn) {
   Macro *m = add_macro(name, true, NULL);
@@ -1045,11 +1043,12 @@ static Token *base_file_macro(Token *tmpl) {
 // __DATE__ is expanded to the current date, e.g. "May 17 2020".
 static char *format_date(struct tm *tm) {
   static char mon[][4] = {
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
   };
 
-  return format("\"%s %2d %d\"", mon[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
+  return format("\"%s %2d %d\"", mon[tm->tm_mon], tm->tm_mday,
+                tm->tm_year + 1900);
 }
 
 // __TIME__ is expanded to the current time, e.g. "13:34:03".
@@ -1113,7 +1112,11 @@ void init_macros(void) {
 }
 
 typedef enum {
-  STR_NONE, STR_UTF8, STR_UTF16, STR_UTF32, STR_WIDE,
+  STR_NONE,
+  STR_UTF8,
+  STR_UTF16,
+  STR_UTF32,
+  STR_WIDE,
 } StringKind;
 
 static StringKind getStringKind(Token *tok) {
@@ -1121,10 +1124,14 @@ static StringKind getStringKind(Token *tok) {
     return STR_UTF8;
 
   switch (tok->loc[0]) {
-  case '"': return STR_NONE;
-  case 'u': return STR_UTF16;
-  case 'U': return STR_UTF32;
-  case 'L': return STR_WIDE;
+  case '"':
+    return STR_NONE;
+  case 'u':
+    return STR_UTF16;
+  case 'U':
+    return STR_UTF32;
+  case 'L':
+    return STR_WIDE;
   }
   unreachable();
 }
@@ -1150,7 +1157,8 @@ static void join_adjacent_string_literals(Token *tok) {
         kind = k;
         basety = t->ty->base;
       } else if (k != STR_NONE && kind != k) {
-        error_tok(t, "unsupported non-standard concatenation of string literals");
+        error_tok(t,
+                  "unsupported non-standard concatenation of string literals");
       }
     }
 

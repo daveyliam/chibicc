@@ -105,18 +105,14 @@ static void parse_args(int argc, char **argv) {
     }
 
     // These options are ignored for now.
-    if (!strncmp(argv[i], "-O", 2) ||
-        !strncmp(argv[i], "-W", 2) ||
-        !strncmp(argv[i], "-g", 2) ||
-        !strncmp(argv[i], "-std=", 5) ||
+    if (!strncmp(argv[i], "-O", 2) || !strncmp(argv[i], "-W", 2) ||
+        !strncmp(argv[i], "-g", 2) || !strncmp(argv[i], "-std=", 5) ||
         !strcmp(argv[i], "-ffreestanding") ||
         !strcmp(argv[i], "-fno-builtin") ||
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||
         !strcmp(argv[i], "-fno-stack-protector") ||
-        !strcmp(argv[i], "-fno-strict-aliasing") ||
-        !strcmp(argv[i], "-m64") ||
-        !strcmp(argv[i], "-mno-red-zone") ||
-        !strcmp(argv[i], "-w"))
+        !strcmp(argv[i], "-fno-strict-aliasing") || !strcmp(argv[i], "-m64") ||
+        !strcmp(argv[i], "-mno-red-zone") || !strcmp(argv[i], "-w"))
       continue;
 
     if (argv[i][0] == '-' && argv[i][1] != '\0')
@@ -165,11 +161,9 @@ static Obj *cc1(void) {
   for (int i = 0; (i + 1) < opt_define.len; i += 2) {
     if (opt_define.data[i][0] == 'D') {
       define(opt_define.data[i + 1]);
-    }
-    else if (opt_define.data[i][0] == 'U') {
+    } else if (opt_define.data[i][0] == 'U') {
       undef_macro(opt_define.data[i + 1]);
-    }
-    else {
+    } else {
       unreachable();
     }
   }
@@ -220,7 +214,7 @@ int main(int argc, char **argv) {
     reset_tokenize();
     reset_preprocess();
     reset_parse();
-  
+
     base_file = input;
     init_macros();
     add_default_include_paths(argv[0]);
