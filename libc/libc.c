@@ -46,18 +46,17 @@ void *sbrk(intptr_t increment) {
 
 
 void *memset(void *s, int c, size_t n) {
-    // for (int i = 0; i < n; i++) {
-    //     s[i] = c;
-    // }
-    __builtin_memory_fill(s, c, n);
+    uint8_t c2 = (uint8_t) c;
+    for (int i = 0; i < n; i++) {
+        ((uint8_t*)s)[i] = c2;
+    }
     return s;
 }
 
 void *memcpy(void *dest, const void *src, size_t n) {
-    // for (int i = 0; i < n; i++) {
-    //     dest[i] = src[i];
-    // }
-    __builtin_memory_copy(dest, src, n);
+    for (int i = 0; i < n; i++) {
+        ((uint8_t*)dest)[i] = ((uint8_t*)src)[i];
+    }
     return dest;
 }
 

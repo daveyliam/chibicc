@@ -236,16 +236,15 @@ int main(int argc, char **argv) {
 
   // Codegen to temporary output buffer in case we need to
   // seek and the output file is stdout.
-  char *buf;
-  size_t buflen;
-  FILE *output_buf = open_memstream(&buf, &buflen);
-  codegen(progs_head.next, output_buf);
-  fclose(output_buf);
+  ByteArray buf = {0}; 
+  codegen(progs_head.next, &buf);
 
   // Write codegen output to output file.
   FILE *out = open_file(opt_o ? opt_o : "a.out");
-  fwrite(buf, buflen, 1, out);
+  fwrite(buf.data, buf.len, 1, out);
   fclose(out);
+
+  bytearray_free(&buf);
 
   strarray_free(&include_paths);
   strarray_free(&opt_define);

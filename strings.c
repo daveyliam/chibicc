@@ -37,3 +37,31 @@ char *format(char *fmt, ...) {
   fclose(out);
   return buf;
 }
+
+void bytearray_append(ByteArray *arr, uint8_t b) {
+  if (arr->len >= arr->cap) {
+    if (arr->cap < 8) {
+      arr->cap = 8;
+    } else {
+      arr->cap *= 2;
+    }
+    arr->data = realloc(arr->data, arr->cap);
+    memset(arr->data + arr->len, 0, arr->cap - arr->len);
+  }
+  arr->data[arr->len++] = b;
+}
+
+void bytearray_extend(ByteArray *arr, uint8_t *data, int len) {
+  for (int i = 0; i < len; i++) {
+    bytearray_append(arr, data[i]);
+  }
+}
+
+void bytearray_free(ByteArray *arr) {
+  if (arr->data) {
+    free(arr->data);
+    arr->data = NULL;
+  }
+  arr->len = 0;
+  arr->cap = 0;
+}

@@ -25,15 +25,15 @@
 #define __attribute__(x)
 #endif
 
-#define PTR_SIZE 4
-#define VA_AREA_SIZE 4
+#define PTR_SIZE 8
+#define VA_AREA_SIZE 8
 
 typedef struct Type Type;
 typedef struct Node Node;
 typedef struct Member Member;
 typedef struct Relocation Relocation;
 typedef struct Hideset Hideset;
-typedef struct BasicBlock BasicBlock;
+typedef struct Label Label;
 typedef struct Prog Prog;
 
 //
@@ -49,6 +49,16 @@ typedef struct {
 void strarray_push(StringArray *arr, char *s);
 void strarray_free(StringArray *arr);
 char *format(char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+typedef struct {
+  uint8_t *data;
+  int len;
+  int cap;
+} ByteArray;
+
+void bytearray_append(ByteArray *arr, uint8_t b);
+void bytearray_extend(ByteArray *arr, uint8_t *data, int len);
+void bytearray_free(ByteArray *arr);
 
 //
 // tokenize.c
@@ -146,6 +156,7 @@ struct Obj {
   bool is_function;
   bool is_definition;
   bool is_static;
+  Label *label;
 
   // Global variable
   bool is_tentative;
@@ -170,7 +181,6 @@ struct Obj {
   Node *gotos;
   Node *labels;
   Node *funcalls;
-  BasicBlock *bbs;
 
   // Static inline function
   bool is_live;
@@ -276,7 +286,7 @@ struct Node {
   // Goto or labeled statement, or labels-as-values
   char *label;
   Node *goto_next;
-  BasicBlock *goto_bb;
+  Label *goto_label;
 
   // Switch
   Node *case_next;
@@ -285,6 +295,7 @@ struct Node {
   // Case
   long begin;
   long end;
+  Label *case_label;
 
   // "asm" string literal
   char *asm_str;
@@ -432,6 +443,67 @@ void add_type(Node *node);
 // codegen.c
 //
 
+enum {
+  BC_NOP,
+  BC_MOV_R0_IMM,
+  BC_MOV_R1_IMM,
+  BC_PUSH_R0,
+  BC_PUSH_R1,
+  BC_POP_R0,
+  BC_POP_R1,
+  BC_PUSH_FP,
+  BC_MOV_R0_R1,
+  BC_MOV_R1_R0,
+  BC_ADD,
+  BC_SUB,
+  BC_MUL,
+  BC_DIV_U,
+  BC_DIV_S,
+  BC_REM_U,
+  BC_REM_S,
+  BC_AND,
+  BC_OR,
+  BC_XOR,
+  BC_SHL,
+  BC_SHR_U,
+  BC_SHR_S,
+  BC_NOT,
+  BC_NEG,
+  BC_TRUNC_8,
+  BC_TRUNC_16,
+  BC_TRUNC_32,
+  BC_SEXT_8,
+  BC_SEXT_16,
+  BC_SEXT_32,
+  BC_EQ_ZERO,
+  BC_EQ,
+  BC_NE,
+  BC_LT_U,
+  BC_LT_S,
+  BC_LE_U,
+  BC_LE_S,
+  BC_LOAD_U64,
+  BC_LOAD_U32,
+  BC_LOAD_U16,
+  BC_LOAD_U8,
+  BC_STORE_U64,
+  BC_STORE_U32,
+  BC_STORE_U16,
+  BC_STORE_U8,
+  BC_JMP,
+  BC_JZ,
+  BC_JNZ,
+  BC_LEA_PC_REL,
+  BC_LEA_FP_REL,
+  BC_PICK,
+  BC_CALL,
+  BC_SYSCALL6,
+  BC_ENTER,
+  BC_LEAVE,
+  BC_MEMSET,
+  BC_MEMCPY,
+};
+
 struct Prog {
   Prog *next;
   Obj *obj;
@@ -439,7 +511,7 @@ struct Prog {
   int index;
 };
 
-void codegen(Prog *progs, FILE *out);
+void codegen(Prog *progs, ByteArray *out);
 int align_to(int n, int align);
 
 //

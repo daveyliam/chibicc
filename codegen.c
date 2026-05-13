@@ -1,214 +1,245 @@
 #include "chibicc.h"
 
-#define DEBUG_STACKIFIER 0
+#define SEG_ALIGN 4096
 
-typedef struct Insn {
-  struct Insn *next;
-  char *op;
-} Insn;
+typedef enum {
+  LABEL_CODE,
+  LABEL_DATA,
+} LabelKind;
 
-#define MAX_BB_OUTS 2
+typedef struct LabelRef {
+  struct LabelRef *next;
+  LabelKind kind;
+  int offset;
+  int vaddr;
+} LabelRef;
 
-typedef struct BasicBlock {
-  struct BasicBlock *next;
-  int idx;
-  int sorted_idx;
-  Insn insns_head;
-  Insn *insns_tail;
-  bool is_terminated;
-  int outs_count;
-  struct BasicBlock *outs[MAX_BB_OUTS];
-  int forward_outs_count;
-  struct BasicBlock *forward_outs[MAX_BB_OUTS];
-  int backward_outs_count;
-  struct BasicBlock *backward_outs[MAX_BB_OUTS];
-  int ins_count;
-  struct BasicBlock **ins;
-  uint8_t *dominators_set;
-  uint8_t *reachable_set;
-  bool is_loop_header;
-} BasicBlock;
+typedef struct Label {
+  struct Label *next;
+  LabelKind kind;
+  int offset;
+  int vaddr;
+  struct LabelRef *refs;
+} Label;
 
-typedef enum ScopeKind { SCOPE_BLOCK, SCOPE_LOOP } ScopeKind;
-
-typedef struct StackifierScope {
-  struct StackifierScope *next;
-  ScopeKind kind;
-  int start;
-  int end;
-} StackifierScope;
-
-typedef struct IntVector {
-  int *data;
-  int length;
-  int capacity;
-} IntVector;
-
-typedef struct WasmLocal {
-  struct WasmLocal *next;
-  Type *ty;
-  int idx;
-} WasmLocal;
-
-static FILE *current_out_file = NULL;
+static ByteArray *current_out = NULL;
+static int current_offset = 0;
+static int current_vaddr = 0;
 static Obj *current_fn = NULL;
 
-static int local_counter = 0;
-WasmLocal current_locals_head = {};
-WasmLocal *current_locals_tail = NULL;
+static Label *current_return_label = NULL;
+static Label *current_break_label = NULL;
+static Label *current_continue_label = NULL;
 
-static int bb_counter = 0;
-static BasicBlock current_bbs_head = {};
-static BasicBlock *current_bbs_tail = NULL;
-static BasicBlock *current_fn_return_bb = NULL;
-static BasicBlock *current_bb = NULL;
-
-static BasicBlock *current_break_bb = NULL;
-static BasicBlock *current_continue_bb = NULL;
+static Label *labels = NULL;
 
 static void gen_expr(Node *node);
 static void _gen_stmt(Node *node, bool should_drop_result);
 static void gen_stmt(Node *node);
 
-static void put_wasm(char *text) { fputs(text, current_out_file); }
-
-__attribute__((format(printf, 1, 2))) static void fmt_wasm(char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  vfprintf(current_out_file, fmt, ap);
-  va_end(ap);
+static Label *new_label(LabelKind kind) {
+  Label *label = calloc(1, sizeof(Label));
+  label->kind = kind;
+  if (labels) {
+    label->next = labels;
+  }
+  labels = label;
+  return label;
 }
 
-static BasicBlock *append_new_bb(void) {
-  BasicBlock *bb = calloc(1, sizeof(BasicBlock));
-
-  bb->idx = bb_counter;
-  bb_counter += 1;
-  bb->sorted_idx = -1;
-  bb->insns_head.next = NULL;
-  bb->insns_tail = &bb->insns_head;
-
-  current_bbs_tail->next = bb;
-  current_bbs_tail = bb;
-  return bb;
+static void label_set_dest(Label *label) {
+  label->offset = current_offset;
+  label->vaddr = current_vaddr;
 }
 
-static void set_current_bb(BasicBlock *bb) { current_bb = bb; }
+static LabelRef *label_add_ref(Label *label, LabelKind ref_kind) {
+  LabelRef *ref = calloc(1, sizeof(LabelRef));
+  ref->kind = ref_kind;
+  ref->offset = current_offset;
+  ref->vaddr = current_vaddr;
+  if (label->refs) {
+    ref->next = label->refs;
+  }
+  label->refs = ref;
+  return ref;
+}
 
-static void put_insn(char *op) {
-  if (current_bb->is_terminated) {
-    fprintf(stderr,
-            "warning: function %s: adding insn '%s' to terminated bb bb_%d\n",
-            current_fn->name, op, current_bb->idx);
+static void emit_bytes(char *data, int n) {
+  bytearray_extend(current_out, (uint8_t*)data, n);
+  current_offset += n;
+  current_vaddr += n;
+}
+
+static void emit_u8(uint8_t val) {
+  bytearray_append(current_out, val);
+  current_offset += 1;
+  current_vaddr += 1;
+}
+
+static void emit_i16(int16_t val) {
+  emit_u8((val >> 0) & 0xff);
+  emit_u8((val >> 8) & 0xff);
+}
+
+static void emit_i32(int32_t val) {
+  emit_u8((val >> 0) & 0xff);
+  emit_u8((val >> 8) & 0xff);
+  emit_u8((val >> 16) & 0xff);
+  emit_u8((val >> 24) & 0xff);
+}
+
+static void emit_i64(int64_t val) {
+  emit_u8((val >> 0) & 0xff);
+  emit_u8((val >> 8) & 0xff);
+  emit_u8((val >> 16) & 0xff);
+  emit_u8((val >> 24) & 0xff);
+  emit_u8((val >> 32) & 0xff);
+  emit_u8((val >> 40) & 0xff);
+  emit_u8((val >> 48) & 0xff);
+  emit_u8((val >> 56) & 0xff);
+}
+
+static void patch_i32(int offset, int32_t val) {
+  uint8_t *buf = current_out->data;
+  buf[offset + 0] = (val >> 0) & 0xff;
+  buf[offset + 1] = (val >> 8) & 0xff;
+  buf[offset + 2] = (val >> 16) & 0xff;
+  buf[offset + 3] = (val >> 24) & 0xff;
+}
+
+static void patch_i64(int offset, int64_t val) {
+  uint8_t *buf = current_out->data;
+  buf[offset + 0] = (val >> 0) & 0xff;
+  buf[offset + 1] = (val >> 8) & 0xff;
+  buf[offset + 2] = (val >> 16) & 0xff;
+  buf[offset + 3] = (val >> 24) & 0xff;
+  buf[offset + 4] = (val >> 32) & 0xff;
+  buf[offset + 5] = (val >> 40) & 0xff;
+  buf[offset + 6] = (val >> 48) & 0xff;
+  buf[offset + 7] = (val >> 56) & 0xff;
+}
+
+#define DEF_EMIT_INSN(name, opcode) \
+  static void name() { \
+    emit_u8(opcode); \
   }
 
-  Insn *insn = calloc(1, sizeof(Insn));
-  insn->op = op;
-  current_bb->insns_tail->next = insn;
-  current_bb->insns_tail = insn;
+DEF_EMIT_INSN(nop, BC_NOP);
+DEF_EMIT_INSN(emit_push_r0, BC_PUSH_R0);
+DEF_EMIT_INSN(emit_push_r1, BC_PUSH_R1);
+DEF_EMIT_INSN(emit_pop_r0, BC_POP_R0);
+DEF_EMIT_INSN(emit_pop_r1, BC_POP_R1);
+DEF_EMIT_INSN(emit_push_fp, BC_PUSH_FP);
+DEF_EMIT_INSN(emit_mov_r0_r1, BC_MOV_R0_R1);
+DEF_EMIT_INSN(emit_mov_r1_r0, BC_MOV_R1_R0);
+DEF_EMIT_INSN(emit_add, BC_ADD);
+DEF_EMIT_INSN(emit_sub, BC_SUB);
+DEF_EMIT_INSN(emit_mul, BC_MUL);
+DEF_EMIT_INSN(emit_div_u, BC_DIV_U);
+DEF_EMIT_INSN(emit_div_s, BC_DIV_S);
+DEF_EMIT_INSN(emit_rem_u, BC_REM_U);
+DEF_EMIT_INSN(emit_rem_s, BC_REM_S);
+DEF_EMIT_INSN(emit_and, BC_AND);
+DEF_EMIT_INSN(emit_or, BC_OR);
+DEF_EMIT_INSN(emit_xor, BC_XOR);
+DEF_EMIT_INSN(emit_shl, BC_SHL);
+DEF_EMIT_INSN(emit_shr_u, BC_SHR_U);
+DEF_EMIT_INSN(emit_shr_s, BC_SHR_S);
+DEF_EMIT_INSN(emit_not, BC_NOT);
+DEF_EMIT_INSN(emit_neg, BC_NEG);
+DEF_EMIT_INSN(emit_trunc_8, BC_TRUNC_8);
+DEF_EMIT_INSN(emit_trunc_16, BC_TRUNC_16);
+DEF_EMIT_INSN(emit_trunc_32, BC_TRUNC_32);
+DEF_EMIT_INSN(emit_sext_8, BC_SEXT_8);
+DEF_EMIT_INSN(emit_sext_16, BC_SEXT_16);
+DEF_EMIT_INSN(emit_sext_32, BC_SEXT_32);
+DEF_EMIT_INSN(emit_eq_zero, BC_EQ_ZERO);
+DEF_EMIT_INSN(emit_eq, BC_EQ);
+DEF_EMIT_INSN(emit_ne, BC_NE);
+DEF_EMIT_INSN(emit_lt_u, BC_LT_U);
+DEF_EMIT_INSN(emit_lt_s, BC_LT_S);
+DEF_EMIT_INSN(emit_le_u, BC_LE_U);
+DEF_EMIT_INSN(emit_le_s, BC_LE_S);
+DEF_EMIT_INSN(emit_load_u64, BC_LOAD_U64);
+DEF_EMIT_INSN(emit_load_u32, BC_LOAD_U32);
+DEF_EMIT_INSN(emit_load_u16, BC_LOAD_U16);
+DEF_EMIT_INSN(emit_load_u8, BC_LOAD_U8);
+DEF_EMIT_INSN(emit_store_u64, BC_STORE_U64);
+DEF_EMIT_INSN(emit_store_u32, BC_STORE_U32);
+DEF_EMIT_INSN(emit_store_u16, BC_STORE_U16);
+DEF_EMIT_INSN(emit_store_u8, BC_STORE_U8);
+DEF_EMIT_INSN(emit_call, BC_CALL);
+DEF_EMIT_INSN(emit_syscall6, BC_SYSCALL6);
+DEF_EMIT_INSN(emit_leave, BC_LEAVE);
+DEF_EMIT_INSN(emit_memset, BC_MEMSET);
+DEF_EMIT_INSN(emit_memcpy, BC_MEMCPY);
+
+static void emit_mov_r0_imm(int64_t val) {
+  emit_u8(BC_MOV_R0_IMM);
+  emit_i64(val);
 }
 
-__attribute__((format(printf, 1, 2))) static void fmt_insn(char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  int n = vsnprintf(NULL, 0, fmt, ap);
-  va_end(ap);
-  if (n <= 0) {
-    return;
-  }
-  char *buf = calloc(n + 1, sizeof(char));
-  va_start(ap, fmt);
-  vsnprintf(buf, n + 1, fmt, ap);
-  va_end(ap);
-  put_insn(buf);
+static void emit_mov_r1_imm(int64_t val) {
+  emit_u8(BC_MOV_R1_IMM);
+  emit_i64(val);
 }
 
-static void put_insn_return() {
-  put_insn("return");
-  current_bb->is_terminated = true;
+static void emit_jmp_rel32(int dst) {
+  emit_u8(BC_JMP);
+  emit_i32(dst - (current_vaddr + 4));
 }
 
-static void put_insn_unreachable() {
-  put_insn("unreachable");
-  current_bb->is_terminated = true;
-  current_bb->outs_count = 0;
+static void emit_jz_rel32(int dst) {
+  emit_u8(BC_JZ);
+  emit_i32(dst - (current_vaddr + 4));
 }
 
-static void put_insn_br(BasicBlock *bb) {
-  fmt_insn("br $bb_%d", bb->idx);
-  current_bb->is_terminated = true;
-  current_bb->outs_count = 1;
-  current_bb->outs[0] = bb;
+static void emit_jnz_rel32(int dst) {
+  emit_u8(BC_JNZ);
+  emit_i32(dst - (current_vaddr + 4));
 }
 
-static void put_insn_br_if(BasicBlock *then_bb, BasicBlock *else_bb) {
-  fmt_insn("br_if $bb_%d $bb_%d", then_bb->idx, else_bb->idx);
-  current_bb->is_terminated = true;
-  current_bb->outs_count = 2;
-  current_bb->outs[0] = then_bb;
-  current_bb->outs[1] = else_bb;
+static void emit_jmp(Label *label) {
+  emit_jmp_rel32(0);
+  label_add_ref(label, LABEL_CODE);
 }
 
-static bool is_current_bb_terminated(void) { return current_bb->is_terminated; }
-
-static void split_bb(void) {
-  BasicBlock *next_bb = append_new_bb();
-  if (!is_current_bb_terminated()) {
-    put_insn_br(next_bb);
-  }
-  set_current_bb(next_bb);
+static void emit_jz(Label *label) {
+  emit_jz_rel32(0);
+  label_add_ref(label, LABEL_CODE);
 }
 
-static int alloc_local(Type *ty) {
-  int idx = local_counter;
-  local_counter += 1;
-  WasmLocal *local = calloc(1, sizeof(WasmLocal));
-  local->ty = ty;
-  local->idx = idx;
-  current_locals_tail->next = local;
-  current_locals_tail = local;
-  return idx;
+static void emit_jnz(Label *label) {
+  emit_jnz_rel32(0);
+  label_add_ref(label, LABEL_CODE);
+}
+
+static void emit_lea_pc_rel(Label *label) {
+  emit_u8(BC_LEA_PC_REL);
+  emit_i32(0);
+  label_add_ref(label, LABEL_CODE);
+}
+
+static void emit_lea_fp_rel(int offset) {
+  emit_u8(BC_LEA_FP_REL);
+  emit_i32(offset);
+}
+
+static void emit_pick(int offset) {
+  emit_u8(BC_PICK);
+  emit_i32(offset);
+}
+
+static void emit_enter(int frame_size) {
+  emit_u8(BC_ENTER);
+  emit_i32(frame_size);
 }
 
 // Round up `n` to the nearest multiple of `align`. For instance,
 // align_to(5, 8) returns 8 and align_to(11, 8) returns 16.
 int align_to(int n, int align) { return (n + align - 1) / align * align; }
 
-static const char *get_wasm_type(Type *ty) {
-  switch (ty->kind) {
-  case TY_VOID:
-    return "void";
-  case TY_BOOL:
-  case TY_CHAR:
-  case TY_SHORT:
-  case TY_INT:
-  case TY_LONG:
-    return "i32";
-  case TY_LONGLONG:
-    return "i64";
-  case TY_FLOAT:
-    return "f32";
-  case TY_DOUBLE:
-    return "f64";
-  case TY_ENUM:
-    return "i32";
-  case TY_PTR:
-    // WASM pointers are i32.
-    return "i32";
-  case TY_FUNC:
-    // WASM function pointers are indexes into a function table.
-    return "i32";
-  case TY_ARRAY:
-  case TY_VLA:
-  case TY_STRUCT:
-  case TY_UNION:
-    // Aggregate types are always passed by reference.
-    return "i32";
-  }
-  error("get_wasm_type: type kind %d unimplemented", ty->kind);
-}
-
-static void cmp_zero(Type *ty) {
+static void gen_is_eq_zero(Type *ty) {
   switch (ty->kind) {
   case TY_BOOL:
   case TY_CHAR:
@@ -216,38 +247,26 @@ static void cmp_zero(Type *ty) {
   case TY_INT:
   case TY_ENUM:
   case TY_LONG:
-    put_insn("i32.eqz");
-    return;
   case TY_LONGLONG:
-    put_insn("i64.eqz");
-    return;
-  case TY_FLOAT:
-    put_insn("f32.const 0");
-    put_insn("f32.eq");
-    return;
-  case TY_DOUBLE:
-    put_insn("f64.const 0");
-    put_insn("f64.eq");
-    return;
   case TY_PTR:
   case TY_FUNC:
   case TY_ARRAY:
   case TY_VLA:
-    // or ref.is_null ?
-    put_insn("i32.eqz");
-    return;
+    emit_eq_zero();
+    break;
   default:
+    error("cmp_zero: bad type %d", ty->kind);
     break;
   }
-  error("gen_is_non_zero: bad type %d", ty->kind);
+}
+
+static void gen_is_ne_zero(Type *ty) {
+  gen_is_eq_zero(ty);
+  emit_eq_zero();
 }
 
 static void gen_lvar_addr(Obj *var) {
-  put_insn("local.get $fp");
-  if (var->offset) {
-    fmt_insn("i32.const %d", var->offset);
-    put_insn("i32.add");
-  }
+  emit_lea_fp_rel(var->offset);
 }
 
 // Compute the absolute address of a given node.
@@ -260,7 +279,7 @@ static void gen_addr(Node *node) {
     // array.
     if (node->var->ty->kind == TY_VLA) {
       gen_lvar_addr(node->var);
-      put_insn("i32.load");
+      emit_load_u64();
       return;
     }
     // For local variables return the stack address of the var.
@@ -268,32 +287,24 @@ static void gen_addr(Node *node) {
       gen_lvar_addr(node->var);
       return;
     }
-    // For functions return the function table index.
-    if (node->ty->kind == TY_FUNC) {
-      fmt_insn("i32.const %d", node->var->offset);
-      return;
-    }
-    // For global variables return the memory address.
-    fmt_insn("i32.const %d", node->var->offset);
+    // For functions and global vars return the absolute address.
+    emit_lea_pc_rel(node->var->label);
     return;
   case ND_DEREF:
     gen_expr(node->lhs);
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
-    if (node->lhs->ty->kind != TY_VOID) {
-      put_insn("drop");
-    }
     gen_addr(node->rhs);
     return;
   case ND_MEMBER:
     gen_addr(node->lhs);
-    fmt_insn("i32.const %d", node->member->offset);
-    put_insn("i32.add");
+    emit_mov_r1_imm(node->member->offset);
+    emit_add();
     return;
   case ND_FUNCALL:
-    // If the function returns a struct, then it should be copied to the local
-    // var 'ret_buffer'.
+    // If the callee returns a struct, it is output to the hidden local
+    // var 'ret_buffer' in the calling function's scope.
     if (node->ret_buffer) {
       gen_expr(node);
       return;
@@ -335,175 +346,130 @@ static void load(Type *ty) {
     // the first element of the array in C" occurs.
     return;
   case TY_FLOAT:
-    put_insn("f32.load");
-    return;
   case TY_DOUBLE:
-    put_insn("f64.load");
+    error("cannot load type");
     return;
   default:
     break;
   }
 
-  const char *sx = ty->is_unsigned ? "u" : "s";
-  if (ty->size == 1) {
-    fmt_insn("i32.load8_%s", sx);
-  } else if (ty->size == 2) {
-    fmt_insn("i32.load16_%s", sx);
-  } else if (ty->size == 4) {
-    put_insn("i32.load");
+  if (ty->size == 1 && ty->is_unsigned) {
+    emit_load_u8();
   } else if (ty->size == 8) {
-    put_insn("i64.load");
+    emit_load_u64();
   } else {
     error("cannot load type");
   }
 }
 
-// Store top of stack to the address the second stack entry is pointing to.
+// Store r0 to address pointed to by r1.
 static void store(Type *ty) {
   switch (ty->kind) {
   case TY_STRUCT:
   case TY_UNION:
     // [dst src n] -> []
-    fmt_insn("i32.const %d", ty->size);
-    put_insn("memory.copy");
+    emit_push_r1();
+    emit_push_r0();
+    emit_mov_r0_imm(ty->size);
+    emit_push_r0();
+    emit_memcpy();
     return;
   case TY_FLOAT:
-    put_insn("f32.store");
-    return;
   case TY_DOUBLE:
-    put_insn("f64.store");
+    error("cannot store type");
     return;
   default:
     break;
   }
 
   if (ty->size == 1) {
-    put_insn("i32.store8");
-  } else if (ty->size == 2) {
-    put_insn("i32.store16");
-  } else if (ty->size == 4) {
-    put_insn("i32.store");
+    emit_store_u8();
   } else if (ty->size == 8) {
-    put_insn("i64.store");
+    emit_store_u64();
   } else {
     error("cannot store type");
   }
 }
-enum { I8, I16, I32, I64, U8, U16, U32, U64, F32, F64 };
-
-static int get_type_id(Type *ty) {
-  switch (ty->kind) {
-  case TY_CHAR:
-    return ty->is_unsigned ? U8 : I8;
-  case TY_SHORT:
-    return ty->is_unsigned ? U16 : I16;
-  case TY_INT:
-  case TY_LONG:
-    return ty->is_unsigned ? U32 : I32;
-  case TY_LONGLONG:
-    return ty->is_unsigned ? U64 : I64;
-  case TY_FLOAT:
-    return F32;
-  case TY_DOUBLE:
-    return F64;
-  default:
-    break;
-  }
-
-  // Pointer types.
-  return U32;
-}
-
-// The table for type casts
-static char i32i8[] = "i32.extend8_s";
-static char i32u8[] = "(i32.and (i32.const 0xff))";
-static char i32i16[] = "i32.extend16_s";
-static char i32u16[] = "(i32.and (i32.const 0xffff))";
-static char i32f32[] = "f32.convert_i32_s";
-static char i32i64[] = "i64.extend32_s";
-static char i32f64[] = "f64.convert_i32_s";
-
-static char u32f32[] = "f32.convert_i32_u";
-static char u32i64[] = "i64.extend_i32_u";
-static char u32f64[] = "f64.convert_i32_u";
-
-static char i64f32[] = "f32.convert_i64_s";
-static char i64f64[] = "f64.convert_i64_s";
-
-static char u64f32[] = "f32.convert_i64_u";
-static char u64f64[] = "f64.convert_i64_u";
-
-static char f32i8[] = "(i32.extend8_s (i32.trunc_f32_s))";
-static char f32u8[] = "(i32.and (i32.trunc_f32_u) (i32.const 0xff))";
-static char f32i16[] = "(i32.extend16_s (i32.trunc_f32_s))";
-static char f32u16[] = "(i32.and (i32.trunc_f32_u) (i32.const 0xff))";
-static char f32i32[] = "i32.trunc_f32_s";
-static char f32u32[] = "i32.trunc_f32_u";
-static char f32i64[] = "i64.trunc_f32_s";
-static char f32u64[] = "i64.trunc_f32_u";
-static char f32f64[] = "f64.promote_f32";
-
-static char f64i8[] = "(i32.extend8_s (i32.trunc_f64_s))";
-static char f64u8[] = "(i32.and (i32.trunc_f64_u) (i32.const 0xff))";
-static char f64i16[] = "(i32.extend16_s (i32.trunc_f64_s))";
-static char f64u16[] = "(i32.and (i32.trunc_f64_u) (i32.const 0xff))";
-static char f64i32[] = "i32.trunc_f64_s";
-static char f64u32[] = "i32.trunc_f64_u";
-static char f64i64[] = "i64.trunc_f64_s";
-static char f64u64[] = "i64.trunc_f64_u";
-static char f64f32[] = "f32.demote_f64";
-
-static char *cast_table[][10] = {
-    // i8   i16     i32     i64     u8     u16     u32     u64     f32     f64
-    {NULL, NULL, NULL, i32i64, i32u8, i32u16, NULL, i32i64, i32f32,
-     i32f64}, // i8
-    {i32i8, NULL, NULL, i32i64, i32u8, i32u16, NULL, i32i64, i32f32,
-     i32f64}, // i16
-    {i32i8, i32i16, NULL, i32i64, i32u8, i32u16, NULL, i32i64, i32f32,
-     i32f64}, // i32
-    {i32i8, i32i16, NULL, NULL, i32u8, i32u16, NULL, NULL, i64f32,
-     i64f64}, // i64
-
-    {i32i8, NULL, NULL, i32i64, NULL, NULL, NULL, i32i64, i32f32, i32f64}, // u8
-    {i32i8, i32i16, NULL, i32i64, i32u8, NULL, NULL, i32i64, i32f32,
-     i32f64}, // u16
-    {i32i8, i32i16, NULL, u32i64, i32u8, i32u16, NULL, u32i64, u32f32,
-     u32f64}, // u32
-    {i32i8, i32i16, NULL, NULL, i32u8, i32u16, NULL, NULL, u64f32,
-     u64f64}, // u64
-
-    {f32i8, f32i16, f32i32, f32i64, f32u8, f32u16, f32u32, f32u64, NULL,
-     f32f64}, // f32
-    {
-        f64i8,
-        f64i16,
-        f64i32,
-        f64i64,
-        f64u8,
-        f64u16,
-        f64u32,
-        f64u64,
-        f64f32,
-        NULL,
-    }, // f64
-};
 
 static void cast(Type *from, Type *to) {
   if (to->kind == TY_VOID) {
-    put_insn("drop");
     return;
   }
 
   if (to->kind == TY_BOOL) {
-    cmp_zero(from);
-    put_insn("i32.eqz");
+    gen_is_ne_zero(from);
     return;
   }
 
-  int t1 = get_type_id(from);
-  int t2 = get_type_id(to);
-  if (cast_table[t1][t2]) {
-    put_insn(cast_table[t1][t2]);
+  if (from->kind == TY_FLOAT || from->kind == TY_DOUBLE) {
+    error("casts from floating point types unsupported");
+  }
+  if (to->kind == TY_FLOAT || to->kind == TY_DOUBLE) {
+    error("casts to floating point types unsupported");
+  }
+
+  int from_size = from->size;
+  switch (from->kind) {
+  case TY_BOOL:
+  case TY_CHAR:
+  case TY_SHORT:
+  case TY_INT:
+  case TY_ENUM:
+  case TY_LONG:
+  case TY_LONGLONG:
+    from_size = from->size;
+    break;
+  default:
+    from_size = PTR_SIZE;
+    break;
+  }
+
+  int to_size;
+  switch (to->kind) {
+  case TY_BOOL:
+  case TY_CHAR:
+  case TY_SHORT:
+  case TY_INT:
+  case TY_ENUM:
+  case TY_LONG:
+  case TY_LONGLONG:
+    to_size = to->size;
+    break;
+  default:
+    to_size = PTR_SIZE;
+    break;
+  }
+
+  // Truncate to target size first.
+  switch (to_size) {
+  case 1:
+    emit_trunc_8();
+    break;
+  case 2:
+    emit_trunc_16();
+    break;
+  case 4:
+    emit_trunc_32();
+    break;
+  default:
+    break;
+  }
+
+  // Sign extend if target is a signed type.
+  if (!to->is_unsigned) {
+    switch (to_size) {
+    case 1:
+      emit_sext_8();
+      break;
+    case 2:
+      emit_sext_16();
+      break;
+    case 4:
+      emit_sext_32();
+      break;
+    default:
+      break;
+    }
   }
 }
 
@@ -515,39 +481,25 @@ static void gen_expr(Node *node) {
   case ND_NUM: {
     switch (node->ty->kind) {
     case TY_FLOAT:
-      fmt_insn("f32.const %f", node->fval);
-      return;
     case TY_DOUBLE:
-      fmt_insn("f64.const %f", node->fval);
-      return;
-    case TY_LONGLONG:
-      fmt_insn("i64.const %lld", node->val);
+      error_tok(node->tok, "float literals unsupported");
       return;
     default:
+      // TODO : is this correct? do we need to cast node->val at compile time?
+      emit_mov_r0_imm(node->val);
       break;
     }
-    fmt_insn("i32.const %d", (int32_t)node->val);
     return;
   }
   case ND_NEG: {
     switch (node->ty->kind) {
     case TY_FLOAT:
-      gen_expr(node->lhs);
-      put_insn("f32.neg");
-      return;
     case TY_DOUBLE:
-      gen_expr(node->lhs);
-      put_insn("f64.neg");
-      return;
-    case TY_LONGLONG:
-      put_insn("i64.const 0");
-      gen_expr(node->lhs);
-      put_insn("i64.sub");
+      error_tok(node->tok, "float negation unsupported");
       return;
     default:
-      put_insn("i32.const 0");
       gen_expr(node->lhs);
-      put_insn("i32.sub");
+      emit_neg();
     }
     return;
   }
@@ -555,22 +507,16 @@ static void gen_expr(Node *node) {
     gen_addr(node);
     load(node->ty);
     return;
-  case ND_MEMBER:
-    gen_addr(node);
-    load(node->ty);
-
+  case ND_MEMBER: {
     Member *mem = node->member;
     if (mem->is_bitfield) {
-      fmt_insn("i32.const %d", 32 - mem->bit_width - mem->bit_offset);
-      put_insn("i32.shl");
-      fmt_insn("i32.const %d", 32 - mem->bit_width);
-      if (mem->ty->is_unsigned) {
-        put_insn("i32.shr_u");
-      } else {
-        put_insn("i32.shr_s");
-      }
+      error_tok(node->tok, "bitfields unsupported");
+      return;
     }
+    gen_addr(node);
+    load(node->ty);
     return;
+  }
   case ND_DEREF:
     gen_expr(node->lhs);
     load(node->ty);
@@ -579,50 +525,22 @@ static void gen_expr(Node *node) {
     gen_addr(node->lhs);
     return;
   case ND_ASSIGN: {
+    if (node->lhs->kind == ND_MEMBER && node->lhs->member->is_bitfield) {
+      error_tok(node->tok, "bitfields unsupported");
+      return;
+    }
     gen_addr(node->lhs);
+    emit_push_r0();
     gen_expr(node->rhs);
-
-    // if (node->lhs->kind == ND_MEMBER && node->lhs->member->is_bitfield) {
-    //   println("  mov %%rax, %%r8");
-
-    //   // If the lhs is a bitfield, we need to read the current value
-    //   // from memory and merge it with a new value.
-    //   Member *mem = node->lhs->member;
-    //   println("  mov %%rax, %%rdi");
-    //   println("  and $%ld, %%rdi", (1L << mem->bit_width) - 1);
-    //   println("  shl $%d, %%rdi", mem->bit_offset);
-
-    //   println("  mov (%%rsp), %%rax");
-    //   load(mem->ty);
-
-    //   long mask = ((1L << mem->bit_width) - 1) << mem->bit_offset;
-    //   println("  mov $%ld, %%r9", ~mask);
-    //   println("  and %%r9, %%rax");
-    //   println("  or %%rdi, %%rax");
-    //   store(node->ty);
-    //   println("  mov %%r8, %%rax");
-    //   return;
-    // }
-
-    // XXX : Need to dup the RHS result so it is not consumed.
-    // WASM doesn't have dup so need to use a local.
-    int tmp = alloc_local(node->ty);
-    fmt_insn("local.tee %d", tmp);
+    emit_pop_r1();
     store(node->ty);
-    fmt_insn("local.get %d", tmp);
     return;
   }
   case ND_STMT_EXPR:
-    for (Node *nd = node->body; nd; nd = nd->next) {
-      bool should_drop_result = (nd->next != NULL);
-      _gen_stmt(nd, should_drop_result);
-    }
+    error_tok(node->tok, "statement expressions unsupported");
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
-    if (node->lhs->ty && (node->lhs->ty->kind != TY_VOID)) {
-      put_insn("drop");
-    }
     gen_expr(node->rhs);
     return;
   case ND_CAST:
@@ -632,149 +550,103 @@ static void gen_expr(Node *node) {
   case ND_MEMZERO:
     // Node is always a local var.
     gen_lvar_addr(node->var);
-    if (node->var->ty->size == 4) {
-      put_insn("i32.const 0");
-      put_insn("i32.store");
-    } else if (node->var->ty->size == 8) {
-      put_insn("i64.const 0");
-      put_insn("i64.store");
+    if (node->var->ty->size == 8) {
+      emit_mov_r1_r0();
+      emit_mov_r0_imm(0);
+      emit_store_u64();
     } else {
-      put_insn("i32.const 0");
-      fmt_insn("i32.const %d", node->var->ty->size);
-      put_insn("memory.fill");
+      emit_push_r0();
+      emit_mov_r0_imm(0);
+      emit_push_r0();
+      emit_mov_r0_imm(node->var->ty->size);
+      emit_push_r0();
+      emit_memset();
     }
     return;
   case ND_COND: {
     // Ternary expression.
-    BasicBlock *then_bb = append_new_bb();
-    BasicBlock *else_bb = append_new_bb();
-    BasicBlock *end_bb = append_new_bb();
-    int result = -1;
-    if (node->ty->kind != TY_VOID) {
-      result = alloc_local(node->ty);
-    }
-
-    split_bb();
+    Label *else_label = new_label(LABEL_CODE);
+    Label *end_label = new_label(LABEL_CODE);
     gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
-    put_insn_br_if(else_bb, then_bb);
-
-    set_current_bb(then_bb);
+    gen_is_eq_zero(node->cond->ty);
+    emit_jz(else_label);
     gen_expr(node->then);
-    if (result >= 0) {
-      fmt_insn("local.set %d", result);
-    } else if (node->then->ty->kind != TY_VOID) {
-      put_insn("drop");
-    }
-    put_insn_br(end_bb);
-
-    set_current_bb(else_bb);
+    emit_jmp(end_label);
+    label_set_dest(else_label);
     gen_expr(node->els);
-    if (result >= 0) {
-      fmt_insn("local.set %d", result);
-    } else if (node->els->ty->kind != TY_VOID) {
-      put_insn("drop");
-    }
-    put_insn_br(end_bb);
-
-    set_current_bb(end_bb);
-    if (result >= 0) {
-      fmt_insn("local.get %d", result);
-    }
+    label_set_dest(end_label);
     return;
   }
   case ND_NOT:
     gen_expr(node->lhs);
-    cmp_zero(node->lhs->ty);
+    gen_is_eq_zero(node->lhs->ty);
     return;
   case ND_BITNOT:
     gen_expr(node->lhs);
-    if (node->lhs->ty->kind == TY_LONGLONG) {
-      put_insn("i64.const -1");
-      put_insn("i64.xor");
-    } else {
-      put_insn("i32.const -1");
-      put_insn("i32.xor");
-    }
+    emit_not();
     return;
   case ND_LOGAND: {
     // Logical AND with short-circuit. Skip the RHS expression if the LHS is
     // false.
-    BasicBlock *rhs_bb = append_new_bb();
-    BasicBlock *end_bb = append_new_bb();
-    int cond_local = alloc_local(node->ty);
-
-    split_bb();
+    Label *end_label = new_label(LABEL_CODE);
     gen_expr(node->lhs);
-    cmp_zero(node->lhs->ty);
-    fmt_insn("local.tee %d", cond_local);
-    put_insn_br_if(end_bb, rhs_bb);
-
-    set_current_bb(rhs_bb);
+    gen_is_ne_zero(node->lhs->ty);
+    emit_jz(end_label);
     gen_expr(node->rhs);
-    cmp_zero(node->rhs->ty);
-    put_insn("i32.eqz");
-    fmt_insn("local.set %d", cond_local);
-    put_insn_br(end_bb);
-
-    set_current_bb(end_bb);
-    if (node->ty->kind != TY_VOID) {
-      fmt_insn("local.get %d", cond_local);
-    }
+    gen_is_ne_zero(node->rhs->ty);
+    label_set_dest(end_label);
     return;
   }
   case ND_LOGOR: {
     // Logical OR with short-circuit. Skip the RHS expression if the LHS is
     // true.
-    BasicBlock *rhs_bb = append_new_bb();
-    BasicBlock *end_bb = append_new_bb();
-    int cond_local = alloc_local(node->ty);
-
-    split_bb();
+    Label *end_label = new_label(LABEL_CODE);
     gen_expr(node->lhs);
-    cmp_zero(node->lhs->ty);
-    put_insn("i32.eqz");
-    fmt_insn("local.tee %d", cond_local);
-    put_insn_br_if(end_bb, rhs_bb);
-
-    set_current_bb(rhs_bb);
+    gen_is_ne_zero(node->lhs->ty);
+    emit_jnz(end_label);
     gen_expr(node->rhs);
-    cmp_zero(node->rhs->ty);
-    put_insn("i32.eqz");
-    fmt_insn("local.set %d", cond_local);
-    put_insn_br(end_bb);
-
-    set_current_bb(end_bb);
-    if (node->ty->kind != TY_VOID) {
-      fmt_insn("local.get %d", cond_local);
-    }
+    gen_is_ne_zero(node->rhs->ty);
+    label_set_dest(end_label);
     return;
   }
   case ND_FUNCALL: {
     if (node->lhs->kind == ND_VAR) {
       if (strcmp(node->lhs->var->name, "alloca") == 0) {
         error_tok(node->tok, "alloca builtin not supported");
-        // gen_expr(node->args);
-        // builtin_alloca();
+        return;
+      }
+      else if (strcmp(node->lhs->var->name, "__builtin_syscall3") == 0) {
+        gen_expr(node->args);
+        emit_push_r0();
+        gen_expr(node->args->next);
+        emit_push_r0();
+        gen_expr(node->args->next->next);
+        emit_push_r0();
+        gen_expr(node->args->next->next->next);
+        emit_push_r0();
+        emit_mov_r0_imm(0);
+        emit_push_r0();
+        emit_push_r0();
+        emit_push_r0();
+        emit_syscall6();
         return;
       } else if (strcmp(node->lhs->var->name, "__builtin_memory_fill") == 0) {
         gen_expr(node->args);
+        emit_push_r0();
         gen_expr(node->args->next);
+        emit_push_r0();
         gen_expr(node->args->next->next);
-        put_insn("memory.fill");
+        emit_push_r0();
+        emit_memset();
         return;
       } else if (strcmp(node->lhs->var->name, "__builtin_memory_copy") == 0) {
         gen_expr(node->args);
+        emit_push_r0();
         gen_expr(node->args->next);
+        emit_push_r0();
         gen_expr(node->args->next->next);
-        put_insn("memory.copy");
-        return;
-      } else if (strcmp(node->lhs->var->name, "__builtin_memory_size") == 0) {
-        put_insn("memory.size");
-        return;
-      } else if (strcmp(node->lhs->var->name, "__builtin_memory_grow") == 0) {
-        gen_expr(node->args);
-        put_insn("memory.grow");
+        emit_push_r0();
+        emit_memcpy();
         return;
       }
     }
@@ -789,99 +661,56 @@ static void gen_expr(Node *node) {
     bool returns_struct = node->ret_buffer;
     if (returns_struct) {
       gen_lvar_addr(node->ret_buffer);
+      emit_push_r0();
     }
 
     // Push each non-variadic arg onto the stack in left to right order.
-    Node *arg = node->args;
-    for (Type *param_ty = func_ty->params; param_ty;
-         param_ty = param_ty->next) {
+    for (Node *arg = node->args; arg; arg = arg->next) {
+      if (arg->ty->size > 8) {
+        error_tok(arg->tok, "args larger than 8 bytes unsupported");
+      }
       gen_expr(arg);
-      arg = arg->next;
+      emit_push_r0();
     }
 
     // Collect remaining variadic args into the 'va_arg_area' local for this
     // call-site.
     if (node->va_arg_area) {
-      int offset = 0;
-      for (; arg; arg = arg->next) {
-        offset = align_to(offset, arg->ty->align);
-        gen_lvar_addr(node->va_arg_area);
-        fmt_insn("i32.const %d", offset);
-        put_insn("i32.add");
-        gen_expr(arg);
-        store(arg->ty);
-        offset += arg->ty->size;
-      }
-      gen_lvar_addr(node->va_arg_area);
+      error_tok(node->tok, "variadic function calls unsupported");
+      // int offset = 0;
+      // for (; arg; arg = arg->next) {
+      //   offset = align_to(offset, arg->ty->align);
+      //   gen_lvar_addr(node->va_arg_area);
+      //   fmt_insn("i32.const %d", offset);
+      //   put_insn("i32.add");
+      //   gen_expr(arg);
+      //   store(arg->ty);
+      //   offset += arg->ty->size;
+      // }
+      // gen_lvar_addr(node->va_arg_area);
     }
 
-    // Try a direct call if the LHS is a function name.
-    // Otherwise do an indirect call using the function table.
-    if (node->lhs->kind == ND_VAR && node->lhs->ty->kind == TY_FUNC) {
-      Obj *fn = node->lhs->var;
-      if (fn->is_static) {
-        fmt_insn("call $%s.%d", fn->name, fn->prog->index);
-      } else {
-        fmt_insn("call $%s", fn->name);
-      }
-    } else {
-      // TODO : Indirect calls. Need to add types for all functions, and add
-      // all functions to a table.
-      if (!func_ty->wasm_idx) {
-        error_tok(node->tok,
-                  "bug, no wasm type emitted for indirect function call");
-      }
-      gen_expr(node->lhs);
-      fmt_insn("(call_indirect (type %d))", func_ty->wasm_idx - 1);
-    }
+    // Call the function.
+    gen_expr(node->lhs);
+    emit_call();
 
+    // If the function returns a struct get the address of the local var it is
+    // stored in.
     if (returns_struct) {
       gen_lvar_addr(node->ret_buffer);
     }
 
-    // If this is a non-returning function, then we should add an unreachable
-    // instruction. How do we get the function obj (global) from the function
-    // call node? Or can we add is_noreturn to the type at parse time? if
-    // (func_var->is_noreturn) {
-    //   put_insn_unreachable();
-    // }
     return;
   }
   case ND_LABEL_VAL:
-    // println("  lea %s(%%rip), %%rax", node->unique_label);
-    error_tok(node->tok, "label-as-values not supported");
-  case ND_CAS: {
-    // gen_expr(node->cas_addr);
-    // push();
-    // gen_expr(node->cas_new);
-    // push();
-    // gen_expr(node->cas_old);
-    // println("  mov %%rax, %%r8");
-    // load(node->cas_old->ty->base);
-    // pop("%rdx"); // new
-    // pop("%rdi"); // addr
-
-    // int sz = node->cas_addr->ty->base->size;
-    // println("  lock cmpxchg %s, (%%rdi)", reg_dx(sz));
-    // println("  sete %%cl");
-    // println("  je 1f");
-    // println("  mov %s, (%%r8)", reg_ax(sz));
-    // println("1:");
-    // println("  movzbl %%cl, %%eax");
-    // return;
-    error_tok(node->tok, "compare and swap builtin not supported");
-  }
-  case ND_EXCH: {
-    // gen_expr(node->lhs);
-    // push();
-    // gen_expr(node->rhs);
-    // pop("%rdi");
-
-    // int sz = node->lhs->ty->base->size;
-    // println("  xchg %s, (%%rdi)", reg_ax(sz));
-    // return;
-    error_tok(node->tok, "exchange builtin not supported");
-  }
+    error_tok(node->tok, "label-as-value not supported");
+    return;
+  case ND_CAS:
+    error_tok(node->tok, "atomic compare and swap builtin not supported");
+    return;
+  case ND_EXCH:
+    error_tok(node->tok, "atomic exchange builtin not supported");
+    return;
   default:
     break;
   }
@@ -892,78 +721,10 @@ static void gen_expr(Node *node) {
   }
 
   switch (node->lhs->ty->kind) {
-  case TY_FLOAT: {
-    // LHS is 32-bit float.
-
-    gen_expr(node->lhs);
-    gen_expr(node->rhs);
-
-    switch (node->kind) {
-    case ND_ADD:
-      put_insn("f32.add");
-      return;
-    case ND_SUB:
-      put_insn("f32.sub");
-      return;
-    case ND_MUL:
-      put_insn("f32.mul");
-      return;
-    case ND_DIV:
-      put_insn("f32.div");
-      return;
-    case ND_EQ:
-      put_insn("f32.eq");
-      return;
-    case ND_NE:
-      put_insn("f32.ne");
-      return;
-    case ND_LT:
-      put_insn("f32.lt");
-      return;
-    case ND_LE:
-      put_insn("f32.le");
-      return;
-    default:
-      break;
-    }
+  case TY_FLOAT:
+  case TY_DOUBLE:
     error_tok(node->tok, "invalid floating point expression");
-  }
-  case TY_DOUBLE: {
-    // LHS is 64-bit float.
-
-    gen_expr(node->lhs);
-    gen_expr(node->rhs);
-
-    switch (node->kind) {
-    case ND_ADD:
-      put_insn("f64.add");
-      return;
-    case ND_SUB:
-      put_insn("f64.sub");
-      return;
-    case ND_MUL:
-      put_insn("f64.mul");
-      return;
-    case ND_DIV:
-      put_insn("f64.div");
-      return;
-    case ND_EQ:
-      put_insn("f64.eq");
-      return;
-    case ND_NE:
-      put_insn("f64.ne");
-      return;
-    case ND_LT:
-      put_insn("f64.lt");
-      return;
-    case ND_LE:
-      put_insn("f64.le");
-      return;
-    default:
-      break;
-    }
-    error_tok(node->tok, "invalid floating point expression");
-  }
+    return;
   case TY_PTR:
   case TY_FUNC:
   case TY_ARRAY:
@@ -972,7 +733,10 @@ static void gen_expr(Node *node) {
     // Parser always makes the pointer the LHS.
 
     gen_expr(node->lhs);
+    emit_push_r0();
     gen_expr(node->rhs);
+    emit_mov_r1_r0();
+    emit_pop_r0();
 
     switch (node->kind) {
     case ND_ADD:
@@ -981,7 +745,7 @@ static void gen_expr(Node *node) {
         // ptr + int.
         // RHS should have been cast to a pointer sized int by the
         // usual arithmetic conversions.
-        put_insn("i32.add");
+        emit_add();
         return;
       default:
         break;
@@ -993,14 +757,14 @@ static void gen_expr(Node *node) {
         // ptr - int.
         // RHS should have been cast to a pointer sized int by the
         // usual arithmetic conversions.
-        put_insn("i32.sub");
+        emit_sub();
         return;
       case TY_PTR:
       case TY_FUNC:
       case TY_ARRAY:
       case TY_VLA:
         // ptr - ptr.
-        put_insn("i32.sub");
+        emit_sub();
         return;
       default:
         break;
@@ -1014,16 +778,16 @@ static void gen_expr(Node *node) {
       // ptr comparison.
       switch (node->kind) {
       case ND_EQ:
-        put_insn("i32.eq");
+        emit_eq();
         return;
       case ND_NE:
-        put_insn("i32.ne");
+        emit_ne();
         return;
       case ND_LT:
-        put_insn("i32.lt_u");
+        emit_lt_u();
         return;
       case ND_LE:
-        put_insn("i32.le_u");
+        emit_le_u();
         return;
       default:
         break;
@@ -1041,69 +805,72 @@ static void gen_expr(Node *node) {
   // integer binary ops.
 
   gen_expr(node->lhs);
+  emit_push_r0();
   gen_expr(node->rhs);
+  emit_mov_r1_r0();
+  emit_pop_r0();
 
   switch (node->kind) {
   case ND_ADD:
-    put_insn("i32.add");
+    emit_add();
     return;
   case ND_SUB:
-    put_insn("i32.sub");
+    emit_sub();
     return;
   case ND_MUL:
-    put_insn("i32.mul");
+    emit_mul();
     return;
   case ND_DIV:
     if (node->ty->is_unsigned) {
-      put_insn("i32.div_u");
+      emit_div_u();
     } else {
-      put_insn("i32.div_s");
+      emit_div_s();
     }
     return;
   case ND_MOD:
     if (node->ty->is_unsigned) {
-      put_insn("i32.rem_u");
+      emit_rem_u();
     } else {
-      put_insn("i32.rem_s");
+      emit_rem_s();
     }
     return;
   case ND_BITAND:
-    put_insn("i32.and");
+    emit_and();
     return;
   case ND_BITOR:
-    put_insn("i32.or");
+    emit_or();
     return;
   case ND_BITXOR:
-    put_insn("i32.xor");
+    emit_xor();
     return;
   case ND_EQ:
-    put_insn("i32.eq");
+    emit_eq();
     return;
   case ND_NE:
-    put_insn("i32.ne");
+    emit_ne();
     return;
   case ND_LT:
     if (node->lhs->ty->is_unsigned) {
-      put_insn("i32.lt_u");
+      emit_lt_u();
     } else {
-      put_insn("i32.lt_s");
+      emit_lt_s();
     }
     return;
   case ND_LE:
     if (node->lhs->ty->is_unsigned) {
-      put_insn("i32.le_u");
+      emit_le_u();
     } else {
-      put_insn("i32.le_s");
+      emit_le_s();
     }
     return;
   case ND_SHL:
-    put_insn("i32.shl");
+    emit_shl();
     return;
   case ND_SHR:
     if (node->lhs->ty->is_unsigned) {
-      put_insn("i32.shr_u");
+      emit_shr_u();
     } else {
-      put_insn("i32.shr_s");
+      emit_shr_s();
     }
     return;
   default:
@@ -1112,194 +879,125 @@ static void gen_expr(Node *node) {
   error_tok(node->tok, "invalid expression");
 }
 
-static void _gen_stmt(Node *node, bool should_drop_result) {
-  // The stack size should be 0 after every statement
-  // EXCEPT if we are within a [GNU] statement expression.
-  // In that case the value of the last expression statement in
-  // the statement expression body should be left on the stack.
-
+static void gen_stmt(Node *node) {
   switch (node->kind) {
   case ND_IF: {
-    BasicBlock *then_bb = append_new_bb();
-    BasicBlock *else_bb = append_new_bb();
-    BasicBlock *end_bb = append_new_bb();
+    Label *else_label = new_label(LABEL_CODE);
+    Label *end_label = new_label(LABEL_CODE);
 
-    split_bb();
     gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
-    put_insn_br_if(else_bb, then_bb);
-
-    set_current_bb(then_bb);
+    gen_is_eq_zero(node->cond->ty);
+    emit_jz(else_label);
     if (node->then) {
       gen_stmt(node->then);
     }
-
-    put_insn_br(end_bb);
-
-    set_current_bb(else_bb);
+    emit_jmp(end_label);
+    label_set_dest(else_label);
     if (node->els) {
       gen_stmt(node->els);
     }
-    put_insn_br(end_bb);
-
-    set_current_bb(end_bb);
+    label_set_dest(end_label);
     return;
   }
   case ND_FOR: {
-    BasicBlock *cond_bb = append_new_bb();
-    BasicBlock *inc_bb = append_new_bb();
-    BasicBlock *loop_bb = append_new_bb();
-    BasicBlock *end_bb = append_new_bb();
+    Label *cond_label = new_label(LABEL_CODE);
+    Label *inc_label = new_label(LABEL_CODE);
+    Label *end_label = new_label(LABEL_CODE);
 
     if (node->init) {
-      split_bb();
       gen_stmt(node->init);
     }
-    put_insn_br(cond_bb);
-
-    set_current_bb(cond_bb);
+    label_set_dest(cond_label);
     if (node->cond) {
       gen_expr(node->cond);
-      cmp_zero(node->cond->ty);
-      put_insn_br_if(end_bb, loop_bb);
-    } else {
-      put_insn_br(loop_bb);
+      gen_is_eq_zero(node->cond->ty);
+      emit_jz(end_label);
     }
-
-    set_current_bb(loop_bb);
     if (node->then) {
-      BasicBlock *prev_break_bb = current_break_bb;
-      BasicBlock *prev_continue_bb = current_continue_bb;
-      current_break_bb = end_bb;
-      current_continue_bb = inc_bb;
+      Label *prev_break_label = current_break_label;
+      Label *prev_continue_label = current_continue_label;
+      current_break_label = end_label;
+      current_continue_label = inc_label;
       gen_stmt(node->then);
-      current_break_bb = prev_break_bb;
-      current_continue_bb = prev_continue_bb;
+      current_break_label = prev_break_label;
+      current_continue_label = prev_continue_label;
     }
-    put_insn_br(inc_bb);
-
-    set_current_bb(inc_bb);
+    label_set_dest(inc_label);
     if (node->inc) {
       gen_expr(node->inc);
     }
-    put_insn_br(cond_bb);
-
-    set_current_bb(end_bb);
+    emit_jmp(cond_label);
+    label_set_dest(end_label);
     return;
   }
   case ND_DO: {
-    BasicBlock *cond_bb = append_new_bb();
-    BasicBlock *loop_bb = append_new_bb();
-    BasicBlock *end_bb = append_new_bb();
+    Label *start_label = new_label(LABEL_CODE);
+    Label *cond_label = new_label(LABEL_CODE);
+    Label *end_label = new_label(LABEL_CODE);
 
-    // no need to split here.
-    put_insn_br(loop_bb);
-
-    set_current_bb(loop_bb);
+    label_set_dest(start_label);
     if (node->then) {
-      BasicBlock *prev_break_bb = current_break_bb;
-      BasicBlock *prev_continue_bb = current_continue_bb;
-      current_break_bb = end_bb;
-      current_continue_bb = cond_bb;
+      Label *prev_break_label = current_break_label;
+      Label *prev_continue_label = current_continue_label;
+      current_break_label = end_label;
+      current_continue_label = cond_label;
       gen_stmt(node->then);
-      current_break_bb = prev_break_bb;
-      current_continue_bb = prev_continue_bb;
+      current_break_label = prev_break_label;
+      current_continue_label = prev_continue_label;
     }
-    put_insn_br(cond_bb);
-
-    set_current_bb(cond_bb);
+    label_set_dest(cond_label);
     gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
-
-    put_insn_br_if(end_bb, loop_bb);
-
-    set_current_bb(end_bb);
+    gen_is_eq_zero(node->cond->ty);
+    emit_jnz(start_label);
+    label_set_dest(end_label);
     return;
   }
   case ND_SWITCH: {
-    // Add basic blocks that we will need to refer to.
-    // However if there are GNU case ranges then we need to check those, and if
-    // they don't match go to the default block.
-
-    split_bb();
-
     // Switch condition value.
     gen_expr(node->cond);
-    int cond_local = alloc_local(node->cond->ty);
-    fmt_insn("local.set %d", cond_local);
+    emit_mov_r1_r0();
 
     // Generate branches to case labels.
-    BasicBlock *next_bb = NULL;
     for (Node *nd = node->case_next; nd; nd = nd->case_next) {
-      bool is_i64 = (node->cond->ty->size > 4);
-
-      nd->goto_bb = append_new_bb();
-
-      fmt_insn("local.get %d", cond_local);
+      nd->case_label = new_label(LABEL_CODE);
       if (nd->begin == nd->end) {
         // Normal single integer case.
-        if (is_i64) {
-          fmt_insn("i64.const %ld", nd->begin);
-          put_insn("i64.eq");
-        } else {
-          fmt_insn("i32.const %ld", nd->begin);
-          put_insn("i32.eq");
-        }
+        emit_mov_r0_imm(nd->begin);
+        emit_eq();
       } else {
         // [GNU] case ranges.
-        if (is_i64) {
-          fmt_insn("i64.const %ld", nd->begin);
-          put_insn("i64.sub");
-          fmt_insn("i64.const %ld", nd->end - nd->begin);
-          put_insn("i64.le_s");
-        } else {
-          fmt_insn("i32.const %ld", nd->begin);
-          put_insn("i32.sub");
-          fmt_insn("i32.const %ld", nd->end - nd->begin);
-          put_insn("i32.le_s");
-        }
+        emit_push_r1();
+        emit_mov_r0_r1();
+        emit_mov_r1_imm(nd->begin);
+        emit_sub();
+        emit_mov_r1_imm(nd->end - nd->begin);
+        emit_le_u();
+        emit_pop_r1();
       }
-      next_bb = append_new_bb();
-      put_insn_br_if(nd->goto_bb, next_bb);
-      set_current_bb(next_bb);
+      emit_jnz(nd->case_label);
     }
 
-    BasicBlock *end_bb = append_new_bb();
+    Label *end_label = new_label(LABEL_CODE);
 
     if (node->default_case) {
-      node->default_case->goto_bb = append_new_bb();
-      put_insn_br(node->default_case->goto_bb);
-    } else {
-      put_insn_br(end_bb);
+      node->default_case->case_label = new_label(LABEL_CODE);
+      emit_jmp(node->default_case->case_label);
     }
 
-    // We terminated the current BB above, so need a new BB for the first
-    // switch body statement.
-    next_bb = append_new_bb();
-    set_current_bb(next_bb);
-
-    BasicBlock *prev_break_bb = current_break_bb;
-    current_break_bb = end_bb;
+    Label *prev_break_label = current_break_label;
+    current_break_label = end_label;
 
     // Generate code for switch body.
     // Includes case labels and all case bodies.
     gen_stmt(node->then);
 
-    // If the last case does not end with a break, then it will not be
-    // terminated.
-    if (!is_current_bb_terminated()) {
-      put_insn_br(end_bb);
-    }
+    current_break_label = prev_break_label;
 
-    current_break_bb = prev_break_bb;
-
-    set_current_bb(end_bb);
+    label_set_dest(end_label);
     return;
   }
   case ND_CASE: {
-    // TODO : Can we move the case BBs closer to the switch?
-    put_insn_br(node->goto_bb);
-    set_current_bb(node->goto_bb);
+    label_set_dest(node->case_label);
     gen_stmt(node->lhs);
     return;
   }
@@ -1310,81 +1008,57 @@ static void _gen_stmt(Node *node, bool should_drop_result) {
     return;
   }
   case ND_BREAK: {
-    // Need to add a new BB just in case we write (unreachable) instructions
-    // after the goto. WASM validator doesn't like unreachable instructions.
-    put_insn_br(current_break_bb);
-    BasicBlock *next_bb = append_new_bb();
-    set_current_bb(next_bb);
+    if (current_break_label == NULL) {
+      error_tok(node->tok, "cannot 'break' here");
+    }
+    emit_jmp(current_break_label);
     return;
   }
   case ND_CONTINUE: {
-    // Same as above, add a new BB after the branch.
-    put_insn_br(current_continue_bb);
-    BasicBlock *next_bb = append_new_bb();
-    set_current_bb(next_bb);
+    if (current_continue_label == NULL) {
+      error_tok(node->tok, "cannot 'continue' here");
+    }
+    emit_jmp(current_continue_label);
     return;
   }
   case ND_GOTO: {
-    // The terminating branch instruction will be added to this basic block
-    // after all labels have been processed.
-    // Add a new basic block (will be unreachable unless it begins with a
-    // label).
-    node->goto_bb = current_bb;
-    BasicBlock *next_bb = append_new_bb();
-    set_current_bb(next_bb);
+    node->goto_label = new_label(LABEL_CODE);
+    emit_jmp(node->goto_label);
     return;
   }
   case ND_GOTO_EXPR:
-    // gen_expr(node->lhs);
-    // println("  jmp *%%rax");
     error_tok(node->tok, "goto expr not supported");
     return;
   case ND_LABEL: {
-    // TODO : only append BB if current BB is not empty?
-    BasicBlock *label_bb = append_new_bb();
-    node->goto_bb = label_bb;
-    put_insn_br(label_bb);
-    set_current_bb(label_bb);
+    // node->goto_label should have been initialized in emit_funcs before code is emitted.
+    label_set_dest(node->goto_label);
     gen_stmt(node->lhs);
     return;
   }
   case ND_RETURN: {
-    // Need to add a basic block in case something tries to generate code after
-    // the return. It will most likely be unreachable.
-    // XXX: This is a bad solution :(
-    BasicBlock *next_bb = append_new_bb();
-    if (!node->lhs) {
-      put_insn_br(current_fn_return_bb);
-      set_current_bb(next_bb);
-      return;
+    if (node->lhs) {
+      Type *ty = node->lhs->ty;
+      bool returns_struct = (ty->kind == TY_STRUCT) || (ty->kind == TY_UNION);
+      if (returns_struct) {
+        // Structure returns are written to the buffer pointed to by the first
+        // param (the hidden first param is inserted by the parser).
+        Obj *ret_buffer_var = current_fn->params;
+        gen_lvar_addr(ret_buffer_var);
+        emit_push_r0();
+        gen_addr(node->lhs);
+        emit_push_r0();
+        emit_mov_r0_imm(ty->size);
+        emit_push_r0();
+        emit_memcpy();
+      } else {
+        gen_expr(node->lhs);
+      }
     }
-    Type *ty = node->lhs->ty;
-    bool returns_struct = (ty->kind == TY_STRUCT) || (ty->kind == TY_UNION);
-    if (returns_struct) {
-      // Structure returns are written to the buffer pointed to by the first
-      // param. (the hidden first param is inserted by the parser).
-      Obj *ret_buffer_var = current_fn->params;
-      gen_lvar_addr(ret_buffer_var);
-      gen_addr(node->lhs);
-      fmt_insn("i32.const %d", ty->size);
-      put_insn("memory.copy");
-      put_insn_br(current_fn_return_bb);
-      set_current_bb(next_bb);
-      return;
-    }
-    gen_expr(node->lhs);
-    put_insn("local.set $result");
-    put_insn_br(current_fn_return_bb);
-    set_current_bb(next_bb);
+    emit_jmp(current_return_label);
     return;
   }
   case ND_EXPR_STMT:
     gen_expr(node->lhs);
-    if (should_drop_result) {
-      if (node->lhs->ty && (node->lhs->ty->kind != TY_VOID)) {
-        put_insn("drop");
-      }
-    }
     return;
   case ND_ASM:
     error_tok(node->tok, "inline asm not supported");
@@ -1396,916 +1070,93 @@ static void _gen_stmt(Node *node, bool should_drop_result) {
   error_tok(node->tok, "invalid statement");
 }
 
-static void gen_stmt(Node *node) { _gen_stmt(node, true); }
-
-static int get_bitset_size(int count) { return (count + 7) / 8; }
-
-static uint8_t *bitset_new(int count) {
-  return calloc(get_bitset_size(count), sizeof(uint8_t));
-}
-
-static void bitset_free(uint8_t *bitset) { free(bitset); }
-
-static void bitset_fill(uint8_t *bitset, bool val, int count) {
-  int size = get_bitset_size(count);
-  if (size == 0) {
-    return;
-  }
-  int n = count % 8;
-  if (n == 0 || !val) {
-    memset(bitset, (val) ? 0xff : 0, size);
-    return;
-  }
-  if (size > 1) {
-    memset(bitset, 0xff, size - 1);
-  }
-  bitset[size - 1] = 0xff >> (8 - n);
-}
-
-static void bitset_copy(uint8_t *bitset1, uint8_t *bitset2, int count) {
-  memmove(bitset1, bitset2, get_bitset_size(count));
-}
-
-static bool bitset_get(uint8_t *bitset, unsigned int index) {
-  return ((bitset[index / 8] & (1 << (index % 8))) != 0);
-}
-
-static void bitset_set(uint8_t *bitset, unsigned int index, bool val) {
-  if (val) {
-    bitset[index / 8] |= 1 << (index % 8);
-  } else {
-    bitset[index / 8] &= ~(1 << (index % 8));
-  }
-}
-
-static void bitset_intersect(uint8_t *bitset1, uint8_t *bitset2, int count) {
-  int size = get_bitset_size(count);
-  for (int i = 0; i < size; i++) {
-    bitset1[i] &= bitset2[i];
-  }
-}
-
-static void bitset_union(uint8_t *bitset1, uint8_t *bitset2, int count) {
-  int size = get_bitset_size(count);
-  for (int i = 0; i < size; i++) {
-    bitset1[i] |= bitset2[i];
-  }
-}
-
-static bool is_bitset_equal(uint8_t *bitset1, uint8_t *bitset2, int count) {
-  int size = get_bitset_size(count);
-  for (int i = 0; i < size; i++) {
-    if (bitset1[i] != bitset2[i]) {
-      return false;
-    };
-  }
-  return true;
-}
-
-static IntVector *intvector_new() {
-  IntVector *vec = calloc(1, sizeof(IntVector));
-  vec->data = NULL;
-  vec->length = 0;
-  vec->capacity = 0;
-  return vec;
-}
-
-static void intvector_push(IntVector *vec, int val) {
-  if (vec->length >= vec->capacity) {
-    int capacity = vec->capacity;
-    if (capacity < 8) {
-      capacity = 8;
-    }
-    while (vec->length >= capacity) {
-      capacity *= 2;
-    }
-    int *data = calloc(capacity, sizeof(int));
-    if (vec->data && (vec->length > 0)) {
-      memcpy(data, vec->data, vec->length * sizeof(int));
-    }
-    if (vec->data) {
-      free(vec->data);
-    }
-    vec->data = data;
-    vec->capacity = capacity;
-  }
-  vec->data[vec->length++] = val;
-}
-
-static int intvector_get(IntVector *vec, int index) {
-  if (index >= vec->length) {
-    return 0;
-  }
-  return vec->data[index];
-}
-
-static int intvector_pop(IntVector *vec) {
-  if (vec->length <= 0) {
-    return 0;
-  }
-  return vec->data[vec->length--];
-}
-
-static void intvector_free(IntVector *vec) {
-  if (vec->data) {
-    free(vec->data);
-  }
-  free(vec);
-}
-
-static void compute_cfg_ins(BasicBlock **bbs, int bb_count) {
-  // Compute predecessors for each BB.
-  uint8_t *tmp = bitset_new(bb_count);
-  for (int i = 0; i < bb_count; i++) {
-    bitset_fill(tmp, false, bb_count);
-    BasicBlock *bb = bbs[i];
-    bb->ins_count = 0;
-    bb->ins = NULL;
-    for (int j = 0; j < bb_count; j++) {
-      BasicBlock *bb2 = bbs[j];
-      for (int k = 0; k < bb2->outs_count; k++) {
-        BasicBlock *bb3 = bb2->outs[k];
-        if (bb3->idx == bb->idx) {
-          if (!bitset_get(tmp, j)) {
-            bb->ins_count += 1;
-            bitset_set(tmp, j, true);
-          }
-        }
-      }
-    }
-    if (bb->ins_count <= 0) {
-      continue;
-    }
-    bb->ins = calloc(bb->ins_count, sizeof(BasicBlock *));
-    int ins_pos = 0;
-    for (int j = 0; j < bb_count; j++) {
-      if (bitset_get(tmp, j)) {
-        bb->ins[ins_pos] = bbs[j];
-        ins_pos += 1;
-      }
-    }
-  }
-  bitset_free(tmp);
-}
-
-static void compute_cfg_dominators(BasicBlock **bbs, int bb_count) {
-  // Compute dominator set for each BB.
-  // Algorithm based on pseudocode at:
-  // https://sbaziotis.com/compilers/visualizing-dominators.html
-
-  // First initialize dominator sets.
-  // The entry point only ever has itself as a dominator.
-  for (int i = 0; i < bb_count; i++) {
-    BasicBlock *bb = bbs[i];
-    bb->dominators_set = bitset_new(bb_count);
-    if (i == 0) {
-      bitset_fill(bb->dominators_set, false, bb_count);
-      bitset_set(bb->dominators_set, 0, true);
-    } else {
-      bitset_fill(bb->dominators_set, true, bb_count);
-    }
-  }
-
-  // The dominator set of each node is the intersection of all its
-  // predecessor's dominator sets. However, as the CFG can have cycles, there
-  // is no easy way to compute all predecessor dominator sets in one pass.
-  // To solve iteratively compute the tentative dominator sets of each node
-  // until the sets don't change anymore.
-  uint8_t *tmp = bitset_new(bb_count);
-  while (1) {
-    bool change = false;
-    for (int i = 1; i < bb_count; i++) {
-      BasicBlock *bb = bbs[i];
-      bitset_fill(tmp, true, bb_count);
-      for (int j = 0; j < bb->ins_count; j++) {
-        BasicBlock *bb2 = bb->ins[j];
-        bitset_intersect(tmp, bb2->dominators_set, bb_count);
-      }
-      bitset_set(tmp, i, true);
-      if (!is_bitset_equal(bb->dominators_set, tmp, bb_count)) {
-        change = true;
-        bitset_copy(bb->dominators_set, tmp, bb_count);
-      }
-    }
-    if (!change) {
-      break;
-    }
-  }
-  bitset_free(tmp);
-}
-
-static void compute_cfg_reachability(BasicBlock **bbs, int bb_count) {
-  // Compute the set of reachable BB's for each BB.
-  // Similar algorithm to computing the dominator tree above.
-  for (int i = 0; i < bb_count; i++) {
-    BasicBlock *bb = bbs[i];
-    bb->reachable_set = bitset_new(bb_count);
-    bitset_fill(bb->reachable_set, false, bb_count);
-  }
-  uint8_t *tmp = bitset_new(bb_count);
-  while (1) {
-    bool change = false;
-    for (int i = 1; i < bb_count; i++) {
-      BasicBlock *bb = bbs[i];
-      bitset_fill(tmp, false, bb_count);
-      for (int j = 0; j < bb->outs_count; j++) {
-        BasicBlock *bb2 = bb->outs[j];
-        bitset_union(tmp, bb2->reachable_set, bb_count);
-      }
-      bitset_set(tmp, i, true);
-      if (!is_bitset_equal(bb->reachable_set, tmp, bb_count)) {
-        change = true;
-        bitset_copy(bb->reachable_set, tmp, bb_count);
-      }
-    }
-    if (!change) {
-      break;
-    }
-  }
-  bitset_free(tmp);
-}
-
-static void _dfs_backward_edges(uint8_t *visited, uint8_t *visiting,
-                                BasicBlock *bb) {
-  bitset_set(visited, bb->idx, true);
-  bitset_set(visiting, bb->idx, true);
-  for (int i = 0; i < bb->outs_count; i++) {
-    BasicBlock *bb2 = bb->outs[i];
-    if (bitset_get(visiting, bb2->idx)) {
-      bb->backward_outs[bb->backward_outs_count] = bb2;
-      bb->backward_outs_count += 1;
-      bb2->is_loop_header = true;
-      continue;
-    }
-    bb->forward_outs[bb->forward_outs_count] = bb2;
-    bb->forward_outs_count += 1;
-    if (bitset_get(visited, bb2->idx)) {
-      continue;
-    }
-    _dfs_backward_edges(visited, visiting, bb2);
-  }
-  bitset_set(visiting, bb->idx, false);
-}
-
-static void compute_cfg_backward_edges(BasicBlock **bbs, int bb_count) {
-  uint8_t *visited = bitset_new(bb_count);
-  uint8_t *visiting = bitset_new(bb_count);
-  _dfs_backward_edges(visited, visiting, bbs[0]);
-  bitset_free(visiting);
-  bitset_free(visited);
-}
-
-static bool bb_is_dominated_by(BasicBlock *bb1, BasicBlock *bb2) {
-  return bitset_get(bb1->dominators_set, bb2->idx);
-}
-
-static bool bb_can_reach(BasicBlock *bb1, BasicBlock *bb2) {
-  return bitset_get(bb1->reachable_set, bb2->idx);
-}
-
-static bool compute_cfg_is_reducible(BasicBlock **bbs, int bb_count) {
-  // Reducible if for every backward edge A->B, B dominates A.
-  // In other words, all loops only have a single entry.
-  for (int i = 0; i < bb_count; i++) {
-    for (int j = 0; j < bbs[i]->backward_outs_count; j++) {
-      if (!bb_is_dominated_by(bbs[i], bbs[j])) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-static void _dfs_topological_sort(BasicBlock **bbs_out, int *bbs_out_count,
-                                  uint8_t *visited, BasicBlock *bb) {
-  bitset_set(visited, bb->idx, true);
-  for (int i = 0; i < bb->forward_outs_count; i++) {
-    BasicBlock *bb2 = bb->forward_outs[i];
-    if (bitset_get(visited, bb2->idx)) {
-      continue;
-    }
-    _dfs_topological_sort(bbs_out, bbs_out_count, visited, bb2);
-  }
-  bbs_out[*bbs_out_count] = bb;
-  *bbs_out_count += 1;
-}
-
-static void topological_sort(BasicBlock **bbs_out, int *bbs_out_count,
-                             BasicBlock **bbs, int bb_count) {
-  // Sort BBs such that for every forward edge A->B, A comes before B in the
-  // ordering.
-  // To achieve this, depth-first-search the forward edge tree. When the DFS
-  // reaches a BB with no forward edges, or all forward edges already
-  // visited, then add it to a stack. This BB should be after all other
-  // BBs in the DFS path that reached it. As the DFS unwinds prior nodes in
-  // the path are added to the stack.
-  // Finally the stack is reversed to get the topological ordering.
-  uint8_t *visited = bitset_new(bb_count);
-  *bbs_out_count = 0;
-  _dfs_topological_sort(bbs_out, bbs_out_count, visited, bbs[0]);
-  bitset_free(visited);
-
-  // Reverse bbs_out.
-  if (*bbs_out_count > 1) {
-    int left = 0;
-    int right = *bbs_out_count - 1;
-    while (left < right) {
-      BasicBlock *tmp = bbs_out[left];
-      bbs_out[left] = bbs_out[right];
-      bbs_out[right] = tmp;
-      left += 1;
-      right -= 1;
-    }
-  }
-}
-
-#if DEBUG_STACKIFIER
-static void dump_bbs(BasicBlock **bbs, int bb_count) {
-  for (int i = 0; i < bb_count; i++) {
-    BasicBlock *bb = bbs[i];
-    fprintf(stderr, "bb_%d: outs=", bb->idx);
-    if (bb->outs_count == 1) {
-      fprintf(stderr, "[bb_%d] ", bb->outs[0]->idx);
-    } else if (bb->outs_count == 2) {
-      fprintf(stderr, "[bb_%d, bb_%d] ", bb->outs[0]->idx, bb->outs[1]->idx);
-    } else {
-      fprintf(stderr, "[] ");
-    }
-    fprintf(stderr, "ins=[");
-    for (int j = 0; j < bb->ins_count; j++) {
-      fprintf(stderr, "bb_%d, ", bb->ins[j]->idx);
-    }
-    fprintf(stderr, "] doms=[");
-    if (bb->dominators_set != NULL) {
-      for (int j = 0; j < bb_count; j++) {
-        if (bitset_get(bb->dominators_set, j)) {
-          fprintf(stderr, "bb_%d, ", j);
-        }
-      }
-    }
-    fprintf(stderr, "] is_loop_header=%d sorted_idx=%d\n",
-            (int)bb->is_loop_header, bb->sorted_idx);
-  }
-}
-#endif
-
-static int qsort_cmp_scope(const void *p1, const void *p2) {
-  // Comparison callback for qsort.
-  // Sort in descending order of 'end' position.
-  StackifierScope *scope1 = *(StackifierScope **)p1;
-  StackifierScope *scope2 = *(StackifierScope **)p2;
-  if (scope1->end < scope2->end) {
-    return 1;
-  } else if (scope1->end > scope2->end) {
-    return -1;
-  }
-  return 0;
-}
-
-static void stackify(BasicBlock *bb_list_head) {
-  // Stackifier algorithm.
-  // Converts an arbitrary Control Flow Graph to structured loops and blocks.
-  // Currently only works for reducible CFG's (does not attempt to split or
-  // merge nodes in an irreducible CFG to make it reducible)
-  // Based on description of algorithm at:
-  //   https://medium.com/leaningtech/solving-the-structured-control-flow-problem-once-and-for-all-5123117b1ee2
-
-  // First need to convert BB linked list to an array of pointers.
-  int bb_count = 0;
-  for (BasicBlock *bb = bb_list_head; bb; bb = bb->next) {
-    bb_count += 1;
-  }
-  BasicBlock **bbs = calloc(bb_count, sizeof(BasicBlock *));
-  for (BasicBlock *bb = bb_list_head; bb; bb = bb->next) {
-    bbs[bb->idx] = bb;
-  }
-
-  compute_cfg_ins(bbs, bb_count);
-  compute_cfg_dominators(bbs, bb_count);
-  compute_cfg_reachability(bbs, bb_count);
-  compute_cfg_backward_edges(bbs, bb_count);
-  bool is_reducible = compute_cfg_is_reducible(bbs, bb_count);
-
-  if (!is_reducible) {
-    fprintf(stderr, "warning: stackifier: CFG for %s is not reducible!\n",
-            current_fn->name);
-  }
-
-  // fprintf(stderr, "%s: bbs unsorted:\n", current_fn->name);
-  // dump_bbs(bbs, bb_count);
-
-  // Topological sort.
-  // Note that unreachable nodes will be left out of the sorted set.
-  BasicBlock **bbs_sorted = calloc(bb_count, sizeof(BasicBlock *));
-  int bb_sorted_count = 0;
-  topological_sort(bbs_sorted, &bb_sorted_count, bbs, bb_count);
-
-  // Move all BBs that are part of a loop to just beneath their loop header
-  // in the topologically sorted BB list.
-  // TODO : additionally check that the block is part of the loop cycle.
-  // i.e. the loop header is reachable from this BB.
-  for (int i = 0; i < bb_sorted_count; i++) {
-    BasicBlock *bb = bbs_sorted[i];
-    if (!bb->is_loop_header) {
-      continue;
-    }
-    // Find all BBs that are part of this loop (including any nested loops)
-    // and move them to just below the loop header.
-    // Nested loop headers will be handled in later iterations.
-    // Note that nested loops are always dominated by the outer loop header too,
-    // as all loops are single entry.
-    int k = i + 1;
-    for (int j = i + 1; j < bb_sorted_count; j++) {
-      BasicBlock *bb2 = bbs_sorted[j];
-      if (!bb_can_reach(bb2, bb) || !bb_is_dominated_by(bb2, bb)) {
-        continue;
-      }
-      // bb2 is part of loop. Need to move bb2 to bbs[k].
-      // However first need to move bbs[k:j] to bbs[k + 1 : j + 1] to free
-      // the slot at bbs[k].
-      if ((j - k) > 0) {
-        memmove(&bbs_sorted[k + 1], &bbs_sorted[k],
-                sizeof(BasicBlock *) * (j - k));
-      }
-      bbs_sorted[k] = bb2;
-      k += 1;
-    }
-  }
-
-  // Set 'sorted_idx' for each BB in the sorted output.
-  for (int i = 0; i < bb_count; i++) {
-    bbs[i]->sorted_idx = -1;
-  }
-  for (int i = 0; i < bb_sorted_count; i++) {
-    bbs_sorted[i]->sorted_idx = i;
-  }
-
-  // Check sort conditions satisfied.
-  for (int i = 0; i < bb_sorted_count; i++) {
-    BasicBlock *bb = bbs_sorted[i];
-    for (int j = 0; j < bb->forward_outs_count; j++) {
-      BasicBlock *bb2 = bb->forward_outs[j];
-      if (bb2->sorted_idx <= i) {
-        fprintf(stderr,
-                "error: function %s: bb_%d should be before bb_%d in the "
-                "sorted order",
-                current_fn->name, bb->idx, bb2->idx);
-      }
-    }
-    if (!bb->is_loop_header) {
-      continue;
-    }
-    bool should_be_loop = true;
-    for (int j = i + 1; j < bb_sorted_count; j++) {
-      BasicBlock *bb2 = bbs_sorted[j];
-      bool is_bb2_in_loop =
-          bb_can_reach(bb2, bb) && bb_is_dominated_by(bb2, bb);
-      if (should_be_loop) {
-        if (!is_bb2_in_loop) {
-          should_be_loop = false;
-        }
-      } else {
-        if (is_bb2_in_loop) {
-          fprintf(stderr,
-                  "error: function %s: bb_%d is part of loop bb_%d, but is not "
-                  "contiguous with "
-                  "other loop blocks\n",
-                  current_fn->name, bb2->idx, bb->idx);
-        }
-      }
-    }
-  }
-
-#if DEBUG_STACKIFIER
-  fprintf(stderr, "%s: bbs sorted:\n", current_fn->name);
-  dump_bbs(bbs_sorted, bb_sorted_count);
-#endif
-
-  // Enclose each loop in a loop scope (while(1) { /*...*/ }).
-  // All back edges become 'continue' statements.
-
-  // Now we are left with the forward edges. If the source and destination
-  // blocks are consecutive in the topological order, we don’t need to do
-  // anything.
-
-  // Otherwise, we need to place a block scope (do{/*...*/} while(0)), such that
-  // the destination block is just after the end of the scope.
-
-  // Note that only one loop can start on a node, but multiple loops can end on
-  // a node. Multiple block scopes can start on a node, but only one block scope
-  // can end on a node.
-
-  StackifierScope scopes_head = {};
-  StackifierScope *scopes_tail = &scopes_head;
-
-  // Find loop scopes.
-  IntVector *loop_stack = intvector_new();
-  for (int i = 0; i < bb_sorted_count; i++) {
-    BasicBlock *bb = bbs_sorted[i];
-    // Check for end of loop.
-    // TODO : should the end of loop be at the last back edge?
-    while (loop_stack->length > 0) {
-      int loop_header_idx = intvector_get(loop_stack, loop_stack->length - 1);
-      BasicBlock *loop_header_bb = bbs_sorted[loop_header_idx];
-      if (bb_can_reach(bb, loop_header_bb) &&
-          bb_is_dominated_by(bb, loop_header_bb)) {
-        // Still in loop.
-        break;
-      }
-      // fprintf(stderr, "bb_%d not part of loop bb_%d\n", bb->idx,
-      // loop_header_bb->idx); This is the first block that is not part of the
-      // loop.
-      StackifierScope *scope = calloc(1, sizeof(StackifierScope));
-      scope->kind = SCOPE_LOOP;
-      scope->start = loop_header_idx;
-      scope->end = i;
-      scopes_tail->next = scope;
-      scopes_tail = scope;
-      intvector_pop(loop_stack);
-    }
-
-    // Check for start of loop.
-    if (bb->is_loop_header) {
-      intvector_push(loop_stack, i);
-    }
-  }
-
-  // Add remaining loop scopes.
-  while (loop_stack->length > 0) {
-    int loop_header_idx = intvector_get(loop_stack, loop_stack->length - 1);
-    StackifierScope *scope = calloc(1, sizeof(StackifierScope));
-    scope->kind = SCOPE_LOOP;
-    scope->start = loop_header_idx;
-    scope->end = bb_sorted_count;
-    scopes_tail->next = scope;
-    scopes_tail = scope;
-    intvector_pop(loop_stack);
-  }
-
-  intvector_free(loop_stack);
-
-  // Find all forward edges that we need to transform into 'breaks'.
-  // Will need a block scope that ends just before the destination block.
-  // Find the earliest break for each destination. The block scope
-  // will need to start at or before this BB.
-  int *block_first_breaks = calloc(bb_sorted_count, sizeof(int));
-  for (int i = 0; i < bb_sorted_count; i++) {
-    block_first_breaks[i] = -1;
-  }
-  for (int i = 0; i < bb_sorted_count; i++) {
-    BasicBlock *bb = bbs_sorted[i];
-    for (int j = 0; j < bb->forward_outs_count; j++) {
-      BasicBlock *bb2 = bb->forward_outs[j];
-      // Ignore forward edges where the destination is the next block in
-      // the sorted BB list.
-      if (bb2->sorted_idx == (i + 1)) {
-        continue;
-      }
-      // Set this as the earliest break if it is the first break we have
-      // seen for this block scope.
-      int block_end = bb2->sorted_idx;
-      if (block_first_breaks[block_end] < 0) {
-        block_first_breaks[block_end] = i;
-      }
-    }
-  }
-
-  // Compute the starts of block scopes by moving them backward from the first
-  // 'break' until they do not interleave with any other scopes.
-  int *block_starts = calloc(bb_sorted_count, sizeof(int));
-  for (int i = 0; i < bb_sorted_count; i++) {
-    block_starts[i] = block_first_breaks[i];
-  }
-  while (1) {
-    bool change = false;
-    for (int i = 0; i < bb_sorted_count; i++) {
-      int first_break = block_first_breaks[i];
-      if (first_break < 0) {
-        continue;
-      }
-      int new_start = first_break;
-      for (StackifierScope *scope = scopes_head.next; scope;
-           scope = scope->next) {
-        // The loop scope ends before the BB at scope->end.
-        // The block scope ends before the BB at i.
-        if ((scope->end > first_break) && (scope->end <= i)) {
-          if (scope->start < new_start) {
-            new_start = scope->start;
-          }
-        }
-      }
-      for (int end = 0; end < bb_sorted_count; end++) {
-        int start = block_starts[end];
-        if (start < 0) {
-          continue;
-        }
-        if ((end > first_break) && (end <= i)) {
-          if (start < new_start) {
-            new_start = start;
-          }
-        }
-      }
-      if (new_start != block_starts[i]) {
-        block_starts[i] = new_start;
-        change = true;
-      }
-    }
-    if (!change) {
-      break;
-    }
-  }
-
-  // Add block scopes.
-  for (int end = 0; end < bb_sorted_count; end++) {
-    int start = block_starts[end];
-    if (start < 0) {
-      continue;
-    }
-    StackifierScope *scope = calloc(1, sizeof(StackifierScope));
-    scope->kind = SCOPE_BLOCK;
-    scope->start = start;
-    scope->end = end;
-    scopes_tail->next = scope;
-    scopes_tail = scope;
-  }
-
-  free(block_starts);
-  free(block_first_breaks);
-
-  // Sort scopes in descending order of end position.
-  // We want to enter scopes that end later first.
-  // TODO : Instead of using qsort, just insert into the scopes linked list
-  // in the correct order.
-  int scope_count = 0;
-  for (StackifierScope *scope = scopes_head.next; scope; scope = scope->next) {
-    scope_count += 1;
-  }
-  StackifierScope **scopes = calloc(scope_count, sizeof(StackifierScope *));
-  int scope_index = 0;
-  for (StackifierScope *scope = scopes_head.next; scope; scope = scope->next) {
-    scopes[scope_index++] = scope;
-  }
-  qsort(scopes, scope_count, sizeof(StackifierScope *), qsort_cmp_scope);
-
-#if DEBUG_STACKIFIER
-  fprintf(stderr, "bbs: %s: unsorted=%d sorted=%d\n", current_fn->name,
-          bb_count, bb_sorted_count);
-  fprintf(stderr, "scopes: %s:\n", current_fn->name);
-  for (int i = 0; i < scope_count; i++) {
-    StackifierScope *scope = scopes[i];
-    fprintf(stderr, "  [%d] %s %d->%d (bb_%d->bb_%d)\n", i,
-            (scope->kind == SCOPE_LOOP) ? "loop" : "block", scope->start,
-            scope->end, bbs_sorted[scope->start]->idx,
-            (scope->end >= bb_sorted_count) ? -1 : bbs_sorted[scope->end]->idx);
-  }
-#endif
-
-  // Output WASM.
-  // int depth = 0;
-  IntVector *scope_stack = intvector_new();
-  for (int i = 0; i < bb_sorted_count; i++) {
-
-    // fprintf(stderr, "  %d: scope_stack=%d\n", i, scope_stack->length);
-
-    while (scope_stack->length > 0) {
-      int scope_index = intvector_get(scope_stack, scope_stack->length - 1);
-      StackifierScope *scope = scopes[scope_index];
-      if (scope->end != i) {
-        break;
-      }
-      // depth -= 1;
-      put_wasm("  )\n");
-      // fprintf(stderr, "  %d: pop scope %d %d\n", i, scope->start,
-      // scope->end);
-      intvector_pop(scope_stack);
-    }
-
-    for (int scope_index = 0; scope_index < scope_count; scope_index++) {
-      StackifierScope *scope = scopes[scope_index];
-      if (scope->start != i) {
-        continue;
-      }
-      if (scope->kind == SCOPE_LOOP) {
-        fmt_wasm("  (loop $bb_%d\n", bbs_sorted[scope->start]->idx);
-      } else {
-        fmt_wasm("  (block $bb_%d\n", bbs_sorted[scope->end]->idx);
-      }
-      // Check if scopes are interleaved.
-      if (scope_stack->length > 0) {
-        int parent_scope_index =
-            intvector_get(scope_stack, scope_stack->length - 1);
-        StackifierScope *parent_scope = scopes[parent_scope_index];
-        if (scope->end > parent_scope->end) {
-          fprintf(stderr,
-                  "warning: function %s: scopes interleaved parent=%d->%d "
-                  "new=%d->%d\n",
-                  current_fn->name, parent_scope->start, parent_scope->end,
-                  scope->start, scope->end);
-        }
-      }
-      // depth += 1;
-      // fprintf(stderr, "  %d: push scope %d %d\n", i, scope->start,
-      // scope->end);
-      intvector_push(scope_stack, scope_index);
-    }
-
-    BasicBlock *bb = bbs_sorted[i];
-    fmt_wasm("    ;; bb_%d\n", bb->idx);
-    for (Insn *insn = bb->insns_head.next; insn; insn = insn->next) {
-      if (insn->next == NULL) {
-        // Terminator instruction.
-        if (bb->outs_count == 0) {
-          fmt_wasm("    %s\n", insn->op);
-          continue;
-        }
-        // For unconditional branches skip if this is an unconditional
-        // branch to the next BB.
-        if (bb->outs_count == 1) {
-          if (bb->forward_outs_count == 1 &&
-              bb->forward_outs[0]->sorted_idx == (i + 1)) {
-            continue;
-          }
-          fmt_wasm("    %s\n", insn->op);
-          continue;
-        }
-        // For conditional branches convert the intermediate 'br_if' with
-        // 'then' and 'else' dests to a 'br_if' and 'br'.
-        // Eliminate one or the other if possible.
-        BasicBlock *bb_then = bb->outs[0];
-        bool bb_then_is_next = (bb_then->sorted_idx == (i + 1));
-        BasicBlock *bb_else = bb->outs[1];
-        bool bb_else_is_next = (bb_else->sorted_idx == (i + 1));
-        if (bb_else_is_next) {
-          // Simple case, output br_if, fallthrough to next BB.
-          fmt_wasm("    br_if $bb_%d\n", bb_then->idx);
-        } else if (bb_then_is_next) {
-          // If the 'then' dest is the fallthrough need to reverse the
-          // condition and br_if to the 'else' dest.
-          put_wasm("    i32.eqz\n");
-          fmt_wasm("    br_if $bb_%d\n", bb_else->idx);
-        } else {
-          // If neither dest is the fallthrough then need to output a
-          // br_if and a br.
-          fmt_wasm("    br_if $bb_%d\n", bb_then->idx);
-          fmt_wasm("    br $bb_%d\n", bb_else->idx);
-        }
-      } else {
-        // Non-terminator instruction.
-        fmt_wasm("    %s\n", insn->op);
-      }
-    }
-  }
-
-  // Close remaining scopes (should only ever be loop scopes remaining).
-  if (scope_stack->length > 0) {
-    while (scope_stack->length > 0) {
-      int scope_index = intvector_get(scope_stack, scope_stack->length - 1);
-      StackifierScope *scope = scopes[scope_index];
-      if (scope->end != bb_sorted_count) {
-        fprintf(
-            stderr,
-            "error: function %s: unclosed scope %d->%d at end of function\n",
-            current_fn->name, scope->start, scope->end);
-      }
-      // depth -= 1;
-      put_wasm("  )\n");
-      intvector_pop(scope_stack);
-    }
-    put_wasm("    unreachable\n");
-  }
-
-  // Cleanup.
-  intvector_free(scope_stack);
-  for (int i = 0; i < bb_count; i++) {
-    if (bbs[i]->ins != NULL) {
-      free(bbs[i]->ins);
-    }
-    bitset_free(bbs[i]->dominators_set);
-    bitset_free(bbs[i]->reachable_set);
-  }
-  StackifierScope *scope = scopes_head.next;
-  while (scope) {
-    StackifierScope *scope_next = scope->next;
-    free(scope);
-    scope = scope_next;
-  }
-  free(scopes);
-  free(bbs_sorted);
-  free(bbs);
-}
-
-#define WASM_PAGE_SIZE 65536
-#define WASM_DATA_START 1024
-#define WASM_STACK_SIZE 65536
-
-static void calculate_gvar_offsets(Obj *prog_obj, int *data_offset) {
-  // First calculate offsets and indexes of global vars.
-  for (Obj *var = prog_obj; var; var = var->next) {
-    if (var->is_function) {
-      continue;
-    }
+static Obj *find_defined_obj(Prog *prog, const char *name) {
+  for (Obj *var = prog->obj; var; var = var->next) {
     if (!var->is_definition) {
       continue;
     }
-
-    *data_offset = align_to(*data_offset, var->ty->align);
-    var->offset = *data_offset;
-
-    *data_offset += var->ty->size;
+    if (strcmp(name, var->name) == 0) {
+      return var;
+    }
   }
+  return NULL;
 }
 
-static void get_exports(Obj *prog_obj, StringArray *exports) {
-  // Collect all exported function and global var names.
-  for (Obj *var = prog_obj; var; var = var->next) {
-    if (!var->is_definition || var->is_static) {
-      continue;
-    }
-    strarray_push(exports, var->name);
-  }
-}
-
-static void emit_types(Obj *prog_obj, int *type_idx) {
-  for (Obj *fn = prog_obj; fn; fn = fn->next) {
-    if (!fn->is_live || !fn->is_definition) {
-      continue;
-    }
-    for (Node *node = fn->funcalls; node; node = node->funcall_next) {
-      Type *ty = node->func_ty;
-      if (ty->wasm_idx) {
+static Obj *find_exported_obj(Prog *progs, const char *name) {
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (!var->is_definition || var->is_static) {
         continue;
       }
+      if (strcmp(name, var->name) == 0) {
+        return var;
+      }
+    }
+  }
+  return NULL;
+}
 
-      fmt_wasm("(type (;%d;) (func (param", *type_idx);
-      for (Type *param_ty = ty->params; param_ty; param_ty = param_ty->next) {
-        fmt_wasm(" %s", get_wasm_type(param_ty));
+static void resolve_names(Prog *progs) {
+  // Create a label for each defined global var and function.
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (!var->is_definition || var->label != NULL) {
+        continue;
       }
-      // If variadic add a pointer to the va_arg_area buffer.
-      if (fn->va_area) {
-        fmt_wasm(" i32");
-      }
-      if (ty->return_ty->kind != TY_VOID) {
-        fmt_wasm(") (result %s)))\n", get_wasm_type(ty->return_ty));
+      if (var->is_function) {
+        var->label = new_label(LABEL_CODE);
       } else {
-        put_wasm(")))\n");
+        var->label = new_label(LABEL_DATA);
       }
-
-      ty->wasm_idx = *type_idx + 1;
-      *type_idx += 1;
+    }
+  }
+  // Find definitions for remaining global vars and functions.
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (var->is_definition || var->label != NULL) {
+        continue;
+      }
+      // First try to look up in current translation unit.
+      Obj *var_def = find_defined_obj(prog, var->name);
+      if (var_def == NULL) {
+        var_def = find_exported_obj(progs, var->name);
+      }
+      if (var_def == NULL) {
+        error_tok(var->tok, "unable to resolve");
+      }
+      var->label = var_def->label;
     }
   }
 }
 
-static void emit_imports(Obj *prog_obj, StringArray *exports, int *type_idx) {
-  for (Obj *fn = prog_obj; fn; fn = fn->next) {
-    // Functions without a definition are imports.
-    // All static funtions should have definitions.
-    if (!fn->is_live || fn->is_static || fn->is_definition) {
-      continue;
-    }
-
-    // Check if this is a function exported by another translation unit.
-    bool skip = false;
-    for (int i = 0; i < exports->len; i++) {
-      if (strcmp(exports->data[i], fn->name) == 0) {
-        skip = true;
-        break;
+static void calculate_gvar_offsets(Prog *progs, int *data_filesz, int *data_memsz) {
+  // Calculate offsets of global vars with initialization data.
+  int offset = 0;
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (var->is_function || !var->is_definition || !var->init_data) {
+        continue;
       }
-    }
-    if (skip) {
-      break;
-    }
-
-    // Imported function. Add function type and import.
-    // TODO : add extra param for functions returning struct.
-    if (fn->is_function) {
-      Type *return_ty = fn->ty->return_ty;
-      // bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind
-      // == TY_UNION);
-
-      fmt_wasm("(type (;%d;) (func (param", *type_idx);
-      for (Type *param_ty = fn->ty->params; param_ty;
-           param_ty = param_ty->next) {
-        fmt_wasm(" %s", get_wasm_type(param_ty));
-      }
-      // If variadic add a pointer to the va_arg_area buffer.
-      if (fn->va_area) {
-        fmt_wasm(" i32");
-      }
-      if (return_ty->kind != TY_VOID) {
-        fmt_wasm(") (result %s)))\n", get_wasm_type(return_ty));
-      } else {
-        put_wasm(")))\n");
-      }
-      fmt_wasm(
-          "(import \"wasi_snapshot_preview1\" \"%s\" (func $%s (type %d)))\n",
-          fn->name, fn->name, *type_idx);
-      *type_idx += 1;
-    } else {
-      // TODO : imported global vars.
-      error("global var imports not supported");
+      offset = align_to(offset, var->ty->align);
+      var->offset = offset;
+      offset += var->ty->size;
     }
   }
+  offset = align_to(offset, SEG_ALIGN);
+  *data_filesz = offset;
+  // Then calculate offsets for global vars without initialization data.
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (var->is_function || !var->is_definition || var->init_data) {
+        continue;
+      }
+      offset = align_to(offset, var->ty->align);
+      var->offset = offset;
+      offset += var->ty->size;
+    }
+  }
+  offset = align_to(offset, SEG_ALIGN);
+  *data_memsz = offset;
 }
 
 static void emit_funcs(Obj *prog_obj) {
@@ -2313,404 +1164,229 @@ static void emit_funcs(Obj *prog_obj) {
     if (!fn->is_function || !fn->is_live || !fn->is_definition) {
       continue;
     }
-
     current_fn = fn;
-    local_counter = 0;
-    bb_counter = 0;
-    current_bbs_head.next = NULL;
-    current_bbs_tail = &current_bbs_head;
-    current_locals_head.next = NULL;
-    current_locals_tail = &current_locals_head;
-
-    BasicBlock *entry_bb = append_new_bb();
-    current_bb = entry_bb;
-
-    current_fn_return_bb = append_new_bb();
-
-    int frame_offset = 0;
+    current_return_label = new_label(LABEL_CODE);
 
     Type *return_ty = fn->ty->return_ty;
-    bool returns_struct =
-        (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
+    bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
     bool has_result = ((return_ty->kind != TY_VOID) && !returns_struct);
+
+    // The last pushed param resides at fp+16.
+    // Params are added left-to-right so this is the rightmost param.
+    int top = 16;
+    int bottom = 0;
+
+    // Assign offsets to pass-by-stack parameters.
+    for (Obj *var = fn->params; var; var = var->next) {
+      top += align_to(var->ty->size, 8);
+    }
+    int param_offset = top;
+    for (Obj *var = fn->params; var; var = var->next) {
+      param_offset -= align_to(var->ty->size, 8);
+      var->offset = param_offset;
+    }
+
+    // Create stack space and assign local offsets for all locals (including
+    // named local vars, function params, and anon locals created by the
+    // parser).
+    for (Obj *var = fn->locals; var; var = var->next) {
+      if (var->offset) {
+        continue;
+      }
+      bottom += align_to(var->ty->size, var->align);
+      var->offset = -bottom;
+    }
+
+    // Set label destination.
+    label_set_dest(fn->label);
+
+    // Function prologue.
+    // The 'enter' instruction does roughly:
+    //   push fp
+    //   mov fp, sp
+    //   sub sp, frame_size
+    emit_enter(bottom);
 
     // Count params.
     int param_count = 0;
     for (Obj *var = fn->params; var; var = var->next) {
-      param_count += 1;
-    }
-
-    // Create stack space and assign local indexes for all locals (including
-    // named local vars, function params, and anon locals created by the
-    // parser).
-    for (Obj *var = fn->locals; var; var = var->next) {
-      frame_offset = align_to(frame_offset, var->ty->align);
-      var->offset = frame_offset;
-      frame_offset += var->ty->size;
-    }
-
-    // Function prologue.
-    // Create stack frame by adjusting global stack pointer.
-    // Alloc local for the frame pointer.
-    put_insn("global.get $__stack_pointer");
-    fmt_insn("i32.const %d", frame_offset);
-    put_insn("i32.sub");
-    put_insn("local.set $fp");
-    put_insn("local.get $fp");
-    put_insn("global.set $__stack_pointer");
-
-    // Increment local counter for params, hidden va_arg_area param, $fp, and
-    // $result.
-    local_counter += param_count;
-    if (fn->va_area) {
-      local_counter += 1;
-    }
-    local_counter += 1;
-    if (has_result) {
-      local_counter += 1;
-    }
-
-    // Copy params to stack frame.
-    param_count = 0;
-    for (Obj *var = fn->params; var; var = var->next) {
-      put_insn("local.get $fp");
-      fmt_insn("i32.const %d", var->offset);
-      put_insn("i32.add");
-      fmt_insn("local.get $p%d", param_count);
-      store(var->ty);
       param_count++;
     }
 
     // For variadic functions setup the hidden __va_area__ local var.
     // The last parameter (also hidden) is a pointer to a stack buffer in the
     // callers stack frame that contains the variadic args.
+    // TODO : implement.
     if (fn->va_area) {
-      gen_lvar_addr(fn->va_area);
-      fmt_insn("local.get $p%d", param_count);
-      put_insn("i32.store");
+      // gen_lvar_addr(fn->va_area);
+      // fmt_insn("local.get $p%d", param_count);
+      // put_insn("i32.store");
+      error("variadic functions not supported");
+    }
+
+    // Create label for each label node, and add that label to each goto node
+    // that refers to the label.
+    // TODO : Could move this to resolve_goto_labels in the parser.
+    for (Node *label_nd = fn->labels; label_nd; label_nd = label_nd->goto_next) {
+      if (label_nd->goto_label == NULL) {
+        label_nd->goto_label = new_label(LABEL_CODE);
+      }
+      for (Node *goto_nd = fn->gotos; goto_nd; goto_nd = goto_nd->goto_next) {
+        if (!strcmp(goto_nd->label, label_nd->label)) {
+          goto_nd->goto_label = label_nd->goto_label;
+        }
+      }
     }
 
     // Emit function body.
     gen_stmt(fn->body);
 
-    BasicBlock *last_bb = current_bb;
-
-    // Add branches to the end of goto basic blocks now that the basic blocks
-    // for all labels have been created.
-    for (Node *goto_nd = fn->gotos; goto_nd; goto_nd = goto_nd->goto_next) {
-      for (Node *label_nd = fn->labels; label_nd;
-           label_nd = label_nd->goto_next) {
-        if (!strcmp(goto_nd->label, label_nd->label)) {
-          set_current_bb(goto_nd->goto_bb);
-          if (!is_current_bb_terminated()) {
-            put_insn_br(label_nd->goto_bb);
-          }
-        }
-      }
+    if (strcmp(fn->name, "main") == 0) {
+      // [https://www.sigbus.info/n1570#5.1.2.2.3p1] The C spec defines
+      // a special rule for the main function. Reaching the end of the
+      // main function is equivalent to returning 0, even though the
+      // behavior is undefined for the other functions.
+      emit_mov_r0_imm(0);
     }
 
-    set_current_bb(last_bb);
-
-    // Need to add a return if there wasn't one.
-    // TODO : remove the current BB rather than adding a return if it is
-    // unreachable.
-    if (!is_current_bb_terminated()) {
-      if (strcmp(fn->name, "main") == 0) {
-        // [https://www.sigbus.info/n1570#5.1.2.2.3p1] The C spec defines
-        // a special rule for the main function. Reaching the end of the
-        // main function is equivalent to returning 0, even though the
-        // behavior is undefined for the other functions.
-        put_insn("i32.const 0");
-      } else if (fn->is_noreturn) {
-        put_insn_unreachable();
-      } else if (return_ty->kind == TY_VOID) {
-        // return nothing.
-      } else if (returns_struct) {
-        // return nothing.
-      } else {
-        // Return uninitialized value.
-        // TODO : ???
-      }
-      put_insn_br(current_fn_return_bb);
-    }
+    label_set_dest(current_return_label);
 
     // Emit function epilogue.
-    set_current_bb(current_fn_return_bb);
-    put_insn("local.get $fp");
-    fmt_insn("i32.const %d", frame_offset);
-    put_insn("i32.add");
-    put_insn("global.set $__stack_pointer");
-    if (has_result) {
-      put_insn("local.get $result");
-    }
-    put_insn_return();
-
-    if (fn->is_static) {
-      fmt_wasm("(func $%s.%d\n", fn->name, fn->prog->index);
-    } else {
-      fmt_wasm("(func $%s\n", fn->name);
-    }
-    // ret_buffer hidden parameter for returning structs is included in
-    // fn->params.
-    param_count = 0;
-    for (Obj *var = fn->params; var; var = var->next) {
-      fmt_wasm("  (param $p%d %s)\n", param_count, get_wasm_type(var->ty));
-      param_count += 1;
-    }
-
-    if (fn->va_area) {
-      fmt_wasm("  (param $p%d i32)\n", param_count);
-      param_count += 1;
-    }
-
-    if (has_result) {
-      fmt_wasm("  (result %s)\n", get_wasm_type(return_ty));
-    }
-
-    put_wasm("  (local $fp i32)\n");
-    if (has_result) {
-      fmt_wasm("  (local $result %s)\n", get_wasm_type(return_ty));
-    }
-    for (WasmLocal *local = current_locals_head.next; local;
-         local = local->next) {
-      fmt_wasm("  (local (;%d;) %s)\n", local->idx, get_wasm_type(local->ty));
-    }
-
-    stackify(current_bbs_head.next);
-
-    put_wasm(")\n");
+    //   mov sp, fp
+    //   pop fp
+    //   ret
+    emit_leave();
 
     current_fn = NULL;
-    local_counter = 0;
-    bb_counter = 0;
-    current_bbs_head.next = NULL;
-    current_bbs_tail = NULL;
-    current_fn_return_bb = NULL;
-    current_locals_head.next = NULL;
-    current_locals_tail = NULL;
-  }
-}
-
-static void calculate_func_table_indices(Obj *prog_obj, int *table_idx) {
-  for (Obj *fn = prog_obj; fn; fn = fn->next) {
-    if (!fn->is_function || !fn->is_live || !fn->is_definition) {
-      continue;
-    }
-    fn->offset = *table_idx;
-    *table_idx += 1;
-  }
-}
-
-static void emit_func_table_elems(Obj *prog_obj) {
-  for (Obj *fn = prog_obj; fn; fn = fn->next) {
-    if (!fn->is_function || !fn->is_live || !fn->is_definition) {
-      continue;
-    }
-    if (fn->is_static) {
-      fmt_wasm("(elem (i32.const %d) $%s.%d)\n", fn->offset, fn->name,
-               fn->prog->index);
-    } else {
-      fmt_wasm("(elem (i32.const %d) $%s)\n", fn->offset, fn->name);
-    }
-  }
-}
-
-static void emit_exports(Obj *prog_obj) {
-  // Function exports for non-static, defined functions.
-  // TODO : global var exports.
-  for (Obj *fn = prog_obj; fn; fn = fn->next) {
-    if (!fn->is_function || !fn->is_live || !fn->is_definition ||
-        fn->is_static) {
-      continue;
-    }
-    fmt_wasm("(export \"%s\" (func $%s))\n", fn->name, fn->name);
-  }
-}
-
-static int encode_name(char *buf, size_t buf_size, const char *s) {
-  int pos = 0;
-  while (*s) {
-    int c = *s;
-    s++;
-    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
-        (c >= 'a' && c <= 'z') || (c == '_') || (c == '.')) {
-      if (pos < buf_size) {
-        buf[pos] = c;
-      }
-      pos += 1;
-    } else {
-      for (int i = 0; i < 2; i++) {
-        int n = (c >> 4) & 0xf;
-        c <<= 4;
-        char hex;
-        if (n < 10) {
-          hex = '0' + n;
-        } else {
-          hex = 'a' + n - 10;
-        }
-        if (pos < buf_size) {
-          buf[pos] = hex;
-        }
-        pos += 1;
-      }
-    }
-  }
-  if (pos < buf_size) {
-    buf[pos] = 0;
-  } else if (buf_size > 0) {
-    buf[buf_size - 1] = 0;
-  }
-  return pos;
-}
-
-static void emit_globals(Obj *prog_obj) {
-  // Add '(global ...)' definitions.
-  for (Obj *var = prog_obj; var; var = var->next) {
-    if (var->is_function) {
-      continue;
-    }
-
-    // For global vars is_definition is false if the var has the 'extern'
-    // attribute.
-    if (!var->is_definition) {
-      // TODO : add import.
-      continue;
-    }
-
-    // TODO : add export for non-static vars.
-    if (!var->is_static) {
-    }
-
-    // TODO : is_const should be part of the type?
-    // TODO : can't really mark memory locations constant?
-    if (var->is_const) {
-    }
-
-    // TODO : thread local global vars.
-    if (var->is_tls) {
-    }
-
-    // TODO : need to encode names to safe characters (no unicode).
-    // The names get lost when converting to binary anyway, so can remove? Use
-    // numeric IDs?
-    int n = encode_name(NULL, 0, var->name);
-    char *encoded_name = calloc(n + 1, sizeof(char));
-    encode_name(encoded_name, n + 1, var->name);
-    if (var->is_static) {
-      fmt_wasm("(global $%s.%d i32 (i32.const %d))\n", encoded_name,
-               var->prog->index, var->offset);
-    } else {
-      fmt_wasm("(global $%s i32 (i32.const %d))\n", encoded_name, var->offset);
-    }
-    free(encoded_name);
+    current_return_label = NULL;
   }
 }
 
 static void emit_data(Obj *prog_obj) {
-  // Add '(data ...)' memory initialization data for global vars with
-  // initializers.
   for (Obj *var = prog_obj; var; var = var->next) {
     if (var->is_function || !var->is_definition || !var->init_data) {
       continue;
     }
-
-    fmt_wasm("(data (i32.const %d) \"", var->offset);
     int pos = 0;
     Relocation *rel = var->rel;
     while (pos < var->ty->size) {
       if (rel && rel->offset == pos) {
-        uint32_t rel_var_offset = rel->var->offset;
-        fmt_wasm("\\%02x\\%02x\\%02x\\%02x", (rel_var_offset >> 0) & 0xff,
-                 (rel_var_offset >> 8) & 0xff, (rel_var_offset >> 16) & 0xff,
-                 (rel_var_offset >> 24) & 0xff);
-        pos += 4;
+        // Data-to-data or data-to-code reference.
+        // TODO : Needs runtime fixup.
+        int64_t rel_var_offset = rel->var->label->vaddr + rel->addend;
+        emit_i64(rel_var_offset);
+        rel = rel->next;
+        pos += 8;
       } else {
-        uint8_t c = var->init_data[pos] & 0xff;
-        if (c >= 0x20 && c <= 0x7e && c != '\\' && c != '"') {
-          fmt_wasm("%c", c);
-        } else {
-          fmt_wasm("\\%02x", var->init_data[pos]);
-        }
+        emit_u8(var->init_data[pos] & 0xff);
         pos += 1;
       }
     }
-    put_wasm("\")\n");
   }
 }
 
-void codegen(Prog *progs, FILE *out) {
-  current_out_file = out;
+#define EHSIZE 64
+#define PHENTSIZE 56
+#define SHENTSIZE 64
 
-  int data_offset = WASM_DATA_START;
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    calculate_gvar_offsets(prog->obj, &data_offset);
-  }
-  int data_end_offset = data_offset;
+void codegen(Prog *progs, ByteArray *out) {
+  current_out = out;
 
-  StringArray exports = {};
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    get_exports(prog->obj, &exports);
-  }
+  // Emit ELF file header.
+  // e_ident (64-bit, little endian, version 1, ELFOSABI_NONE)
+  emit_bytes("\x7f\x45\x4c\x46\x02\x01\x01\x00", 8);
+  // e_ident continued (os abi version 0, 7 bytes padding)
+  emit_bytes("\x00\x00\x00\x00\x00\x00\x00\x00", 8);
+  emit_i16(3); // e_type: ET_DYN
+  emit_i16(0x3e); // e_machine: AMD64=0x3e ARM64=0xb7
+  emit_i32(1); // e_version: 1
+  emit_i64(0); // e_entry: entry point
+  emit_i64(EHSIZE); // e_phoff: program header offset
+  emit_i64(0); // e_shoff: section header offset
+  emit_i32(0); // e_flags: 0
+  emit_i16(EHSIZE); // e_ehsize: ELF header size
+  emit_i16(PHENTSIZE); // e_phentsize: program header size
+  emit_i16(2); // e_phnum: number of program headers
+  emit_i16(SHENTSIZE); // e_shentsize: section header size
+  emit_i16(0); // e_shnum: number of section headers
+  emit_i16(0); // e_shstrndx: string table index
 
-  put_wasm("(module $module0\n");
+  // Emit text program header.
+  emit_i32(1); // p_type: PT_LOAD
+  emit_i32(5); // p_flags: R+X
+  emit_i64(0); // p_offset: offset in file
+  emit_i64(0); // p_vaddr: virtual address
+  emit_i64(0); // p_paddr: physical address
+  emit_i64(0); // p_filesz: size in file
+  emit_i64(0); // p_memsz: size in memory
+  emit_i64(SEG_ALIGN); // p_align: alignment
 
-  // Canonical order is:
-  //  types, imports, funcs, tables, memory, globals, exports, start, elems,
-  //  datacounts, code, data
+  // Emit data program header.
+  emit_i32(1); // p_type: PT_LOAD
+  emit_i32(6); // p_flags: R+W
+  emit_i64(0); // p_offset: offset in file
+  emit_i64(0); // p_vaddr: virtual address
+  emit_i64(0); // p_paddr: physical address
+  emit_i64(0); // p_filesz: size in file
+  emit_i64(0); // p_memsz: size in memory
+  emit_i64(SEG_ALIGN); // p_align: alignment
 
-  int type_idx = 0;
+  resolve_names(progs);
 
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_types(prog->obj, &type_idx);
-  }
-
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_imports(prog->obj, &exports, &type_idx);
-  }
+  int data_filesz = 0;
+  int data_memsz = 0;
+  calculate_gvar_offsets(progs, &data_filesz, &data_memsz);
 
   for (Prog *prog = progs; prog; prog = prog->next) {
     emit_funcs(prog->obj);
   }
 
-  int table_idx = 0;
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    calculate_func_table_indices(prog->obj, &table_idx);
+  int text_filesz = align_to(current_offset, SEG_ALIGN);
+  while (current_offset < text_filesz) {
+    emit_u8(0);
   }
 
-  fmt_wasm("(table %d funcref)\n", table_idx);
-
+  // Set label offsets for global vars now that we know the text segment size.
   for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_func_table_elems(prog->obj);
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (var->is_function || !var->is_definition) {
+        continue;
+      }
+      var->label->offset = text_filesz + var->offset;
+      var->label->vaddr = text_filesz + var->offset;
+    }
   }
 
-  // Stack starts after global variables.
-  int stack_start_offset = align_to(data_end_offset, WASM_PAGE_SIZE);
-  int stack_end_offset = stack_start_offset + WASM_STACK_SIZE;
-  int memory_size = align_to(stack_end_offset, WASM_PAGE_SIZE);
-
-  // Memory size in 4096 B pages.
-  fmt_wasm("(memory %d)\n", memory_size / WASM_PAGE_SIZE);
-
-  // Stack pointer is always the first global.
-  fmt_wasm("(global $__stack_pointer (mut i32) (i32.const %d))\n",
-           stack_end_offset);
-
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_globals(prog->obj);
-  }
-
-  // Add "memory" export (WASI requirement).
-  put_wasm("(export \"memory\" (memory 0))\n");
-
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_exports(prog->obj);
-  }
+  // TODO : emit runtime relocation handlers for data-to-data and data-to-code
+  //   references.
 
   for (Prog *prog = progs; prog; prog = prog->next) {
     emit_data(prog->obj);
   }
 
-  put_wasm(")\n");
+  // Fix up code-to-code and code-to-data references.
+  for (Label *label = labels; label; label = label->next) {
+      for (LabelRef *ref = label->refs; ref; ref = ref->next) {
+          int32_t disp = label->vaddr - ref->vaddr;
+          patch_i32(ref->offset - 4, disp);
+      }
+  }
 
-  current_out_file = NULL;
+  // Find entry point (_start).
+  Obj *start_func = find_exported_obj(progs, "_start");
+  if (start_func == NULL || !start_func->is_function) {
+    error("failed to find _start function");
+  }
+
+  // Fix up ELF file and program headers.
+  patch_i64(24, start_func->label->vaddr); // e_entry
+  patch_i64(EHSIZE + 32, text_filesz); // text p_filesz
+  patch_i64(EHSIZE + 40, text_filesz); // text p_memsz
+  patch_i64(EHSIZE + PHENTSIZE + 8, text_filesz); // data p_offset
+  patch_i64(EHSIZE + PHENTSIZE + 16, text_filesz); // data p_vaddr
+  patch_i64(EHSIZE + PHENTSIZE + 24, text_filesz); // data p_paddr
+  patch_i64(EHSIZE + PHENTSIZE + 32, data_filesz); // data p_filesz
+  patch_i64(EHSIZE + PHENTSIZE + 40, data_memsz); // data p_memsz
+
+  current_out = NULL;
 }
