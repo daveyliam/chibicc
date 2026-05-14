@@ -11,20 +11,18 @@ typedef struct LabelRef {
   struct LabelRef *next;
   LabelKind kind;
   int offset;
-  int vaddr;
 } LabelRef;
 
 typedef struct Label {
   struct Label *next;
   LabelKind kind;
   int offset;
-  int vaddr;
+  int size;
   struct LabelRef *refs;
 } Label;
 
 static ByteArray *current_out = NULL;
 static int current_offset = 0;
-static int current_vaddr = 0;
 static Obj *current_fn = NULL;
 
 static Label *current_return_label = NULL;
@@ -48,14 +46,12 @@ static Label *new_label(LabelKind kind) {
 
 static void label_set_dest(Label *label) {
   label->offset = current_offset;
-  label->vaddr = current_vaddr;
 }
 
 static LabelRef *label_add_ref(Label *label, LabelKind ref_kind) {
   LabelRef *ref = calloc(1, sizeof(LabelRef));
   ref->kind = ref_kind;
   ref->offset = current_offset;
-  ref->vaddr = current_vaddr;
   if (label->refs) {
     ref->next = label->refs;
   }
@@ -63,16 +59,20 @@ static LabelRef *label_add_ref(Label *label, LabelKind ref_kind) {
   return ref;
 }
 
-static void emit_bytes(char *data, int n) {
+static void emit_bytes(const char *data, int n) {
   bytearray_extend(current_out, (uint8_t *)data, n);
   current_offset += n;
-  current_vaddr += n;
 }
 
 static void emit_u8(uint8_t val) {
   bytearray_append(current_out, val);
   current_offset += 1;
-  current_vaddr += 1;
+}
+
+static void emit_zeroes(int n) {
+  for (int i = 0; i < n; i++) {
+    emit_u8(0);
+  }
 }
 
 static void emit_i16(int16_t val) {
@@ -1390,7 +1390,7 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
       offset += var->ty->size;
     }
   }
-  offset = align_to(offset, SEG_ALIGN);
+  offset = align_to(offset, 16);
   *data_filesz = offset;
   // Then calculate offsets for global vars without initialization data.
   for (Prog *prog = progs; prog; prog = prog->next) {
@@ -1403,7 +1403,7 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
       offset += var->ty->size;
     }
   }
-  offset = align_to(offset, SEG_ALIGN);
+  offset = align_to(offset, 16);
   *data_memsz = offset;
 }
 
@@ -1497,6 +1497,8 @@ static void emit_funcs(Obj *prog_obj) {
     //   ret
     emit_leave();
 
+    fn->label->size = current_offset - fn->label->offset;
+
     current_fn = NULL;
     current_return_label = NULL;
   }
@@ -1513,7 +1515,7 @@ static void emit_data(Obj *prog_obj) {
       if (rel && rel->offset == pos) {
         // Data-to-data or data-to-code reference.
         // TODO : Needs runtime fixup.
-        int64_t rel_var_offset = rel->var->label->vaddr + rel->addend;
+        int64_t rel_var_offset = rel->var->label->offset + rel->addend;
         emit_i64(rel_var_offset);
         rel = rel->next;
         pos += 8;
@@ -1548,8 +1550,8 @@ void codegen(Prog *progs, ByteArray *out) {
   emit_i16(PHENTSIZE); // e_phentsize: program header size
   emit_i16(2);         // e_phnum: number of program headers
   emit_i16(SHENTSIZE); // e_shentsize: section header size
-  emit_i16(0);         // e_shnum: number of section headers
-  emit_i16(0);         // e_shstrndx: string table index
+  emit_i16(7);         // e_shnum: number of section headers
+  emit_i16(6);         // e_shstrndx: string table index
 
   // Emit text program header.
   emit_i32(1);         // p_type: PT_LOAD
@@ -1582,9 +1584,7 @@ void codegen(Prog *progs, ByteArray *out) {
   }
 
   int text_filesz = align_to(current_offset, SEG_ALIGN);
-  while (current_offset < text_filesz) {
-    emit_u8(0);
-  }
+  emit_zeroes(text_filesz - current_offset);
 
   // Set label offsets for global vars now that we know the text segment size.
   for (Prog *prog = progs; prog; prog = prog->next) {
@@ -1593,21 +1593,29 @@ void codegen(Prog *progs, ByteArray *out) {
         continue;
       }
       var->label->offset = text_filesz + var->offset;
-      var->label->vaddr = text_filesz + var->offset;
     }
   }
 
   // TODO : emit runtime relocation handlers for data-to-data and data-to-code
   //   references.
-
+  int data_offset = current_offset;
+  int data_end_offset = current_offset + data_filesz;
   for (Prog *prog = progs; prog; prog = prog->next) {
     emit_data(prog->obj);
   }
 
+  if (current_offset > data_end_offset) {
+    error("data segment larger than expected");
+  }
+  emit_zeroes(data_end_offset - current_offset);
+
+  int bss_offset = data_offset + data_filesz;
+  int bss_size = data_memsz - data_filesz;
+
   // Fix up code-to-code and code-to-data references.
   for (Label *label = labels; label; label = label->next) {
     for (LabelRef *ref = label->refs; ref; ref = ref->next) {
-      int32_t disp = label->vaddr - ref->vaddr;
+      int32_t disp = label->offset - ref->offset;
       patch_i32(ref->offset - 4, disp);
     }
   }
@@ -1618,8 +1626,182 @@ void codegen(Prog *progs, ByteArray *out) {
     error("failed to find _start function");
   }
 
-  // Fix up ELF file and program headers.
-  patch_i64(24, start_func->label->vaddr);         // e_entry
+  // Emit section header table.
+  // This is purely so we can have a symbol table for debugging.
+  // Section headers can be entirely omitted.
+
+  // Emit .symtab.
+  // Elf64_Sym:
+  //   st_name  (4): index into .strtab
+  //   st_info  (1): bind << 4 | type
+  //   st_other (1): 0
+  //   st_shndx (2): section index
+  //   st_value (8): symbol value (vaddr)
+  //   st_size  (8): size
+
+  int symtab_offset = align_to(current_offset, 8);
+  emit_zeroes(symtab_offset - current_offset);
+
+  // Entry 0: NULL symbol.
+  emit_zeroes(24);
+
+  // Function and global variable symbols.
+  int symtab_count = 1;
+  int str_offset = 1;
+  int first_local_sym = 0;
+  for (int pass_num = 0; pass_num < 2; pass_num++) {
+    for (Prog *prog = progs; prog; prog = prog->next) {
+      for (Obj *var = prog->obj; var; var = var->next) {
+        if (!var->is_definition || var->is_builtin || var->label == NULL) {
+          continue;
+        }
+        if (pass_num == 0 && var->is_static) {
+          continue;
+        }
+        if (pass_num == 1 && !var->is_static) {
+          continue;
+        }
+        if (var->is_function) {
+          int bind = var->is_static ? 0x0 : 0x1; // STB_LOCAL or STB_GLOBAL
+          emit_i32(str_offset);                  // st_name
+          emit_u8((bind << 4) | 0x2);            // st_info: STT_FUNC
+          emit_u8(0);                            // st_other
+          emit_i16(1);                           // st_shndx = .text
+          emit_i64(var->label->offset);          // st_value
+          emit_i64(var->label->size);            // st_size
+        } else {
+          int bind = var->is_static ? 0x0 : 0x1; // STB_LOCAL or STB_GLOBAL
+          int sec = (var->init_data && !var->is_static) ? 2 : 3; // .data or .bss
+          emit_i32(str_offset);                  // st_name
+          emit_u8((bind << 4) | 0x1);            // st_info: STT_OBJECT
+          emit_u8(0);                            // st_other
+          emit_i16(sec);                         // st_shndx
+          emit_i64(var->label->offset);          // st_value
+          emit_i64(var->ty->size);               // st_size
+        }
+        str_offset += strlen(var->name) + 1;
+        symtab_count += 1;
+      }
+    }
+    first_local_sym = symtab_count;
+  }
+  int symtab_len = current_offset - symtab_offset;
+
+  // Emit .strtab (symbol name table).
+  int strtab_offset = align_to(current_offset, 8);
+  emit_zeroes(strtab_offset - current_offset);
+  // First entry is the empty string.
+  emit_u8(0);
+  // Then function names and var names.
+  // Need to output all global names before any local name to keep the string
+  // table in the same order as the symbol table (to make finding the string
+  // offset easier).
+  // Output global symbols on the first pass, local symbols on the second.
+  for (int pass_num = 0; pass_num < 2; pass_num++) {
+    for (Prog *prog = progs; prog; prog = prog->next) {
+      for (Obj *var = prog->obj; var; var = var->next) {
+        if (!var->is_definition || var->is_builtin || var->label == NULL) {
+          continue;
+        }
+        if (pass_num == 0 && var->is_static) {
+          continue;
+        }
+        if (pass_num == 1 && !var->is_static) {
+          continue;
+        }
+        char *name = var->name;
+        while (*name) {
+          emit_u8(*name++);
+        }
+        emit_u8(0);
+      }
+    }
+  }
+  int strtab_len = current_offset - strtab_offset;
+
+  // Emit .shstrtab (section name table).
+  int shstrtab_offset = current_offset;
+  const char *shstrtab = "\x00.text\x00.data\x00.bss\x00.symtab\x00.strtab\x00.shstrtab\x00";
+  emit_bytes(shstrtab, 1 + 6 + 6 + 5 + 8 + 8 + 10);
+  int shstrtab_len = current_offset - shstrtab_offset;
+
+  // Align section header table to 8 bytes.
+  int sh_offset = align_to(current_offset, 8);
+  emit_zeroes(sh_offset - current_offset);
+
+  // Emit section headers.
+  // SHT_NULL (index 0)
+  emit_zeroes(SHENTSIZE);
+  // .text (index 1)
+  emit_i32(1);                         // sh_name
+  emit_i32(1);                         // sh_type = SHT_PROGBITS
+  emit_i64(6);                         // sh_flags = SHF_ALLOC
+  emit_i64(0);                         // sh_addr
+  emit_i64(0);                         // sh_offset
+  emit_i64(text_filesz);               // sh_size
+  emit_i32(0);                         // sh_link
+  emit_i32(0);                         // sh_info
+  emit_i64(8);                         // sh_addralign
+  emit_i64(0);                         // sh_entsize
+  // .data (index 2)
+  emit_i32(1 + 6);                     // sh_name
+  emit_i32(1);                         // sh_type = SHT_PROGBITS
+  emit_i64(3);                         // sh_flags = SHF_ALLOC | SHF_WRITE
+  emit_i64(data_offset);               // sh_addr
+  emit_i64(data_offset);               // sh_offset
+  emit_i64(data_filesz);               // sh_size
+  emit_i32(0);                         // sh_link
+  emit_i32(0);                         // sh_info
+  emit_i64(8);                         // sh_addralign
+  emit_i64(0);                         // sh_entsize
+  // .bss (index 3)
+  emit_i32(1 + 6 + 6);                 // sh_name
+  emit_i32(8);                         // sh_type = SHT_NOBITS
+  emit_i64(3);                         // sh_flags = SHF_ALLOC | SHF_WRITE
+  emit_i64(bss_offset);                // sh_addr
+  emit_i64(bss_offset);                // sh_offset
+  emit_i64(bss_size);                  // sh_size
+  emit_i32(0);                         // sh_link
+  emit_i32(0);                         // sh_info
+  emit_i64(8);                         // sh_addralign
+  emit_i64(0);                         // sh_entsize
+  // .symtab (index 4)
+  emit_i32(1 + 6 + 6 + 5);             // sh_name
+  emit_i32(2);                         // sh_type = SHT_SYMTAB
+  emit_i64(0);                         // sh_flags
+  emit_i64(0);                         // sh_addr
+  emit_i64(symtab_offset);             // sh_offset
+  emit_i64(symtab_len);                // sh_size
+  emit_i32(5);                         // sh_link -> .strtab
+  emit_i32(first_local_sym);           // sh_info
+  emit_i64(8);                         // sh_addralign
+  emit_i64(24);                        // sh_entsize = sizeof(Elf64_Sym)
+  // .strtab (index 5)
+  emit_i32(1 + 6 + 6 + 5 + 8);         // sh_name
+  emit_i32(3);                         // sh_type = SHT_STRTAB
+  emit_i64(0);                         // sh_flags
+  emit_i64(0);                         // sh_addr
+  emit_i64(strtab_offset);             // sh_offset
+  emit_i64(strtab_len);                // sh_size
+  emit_i32(0);                         // sh_link
+  emit_i32(0);                         // sh_info
+  emit_i64(1);                         // sh_addralign
+  emit_i64(0);                         // sh_entsize
+  // .shstrtab (index 6)
+  emit_i32(1 + 6 + 6 + 5 + 8 + 8);     // sh_name
+  emit_i32(3);                         // sh_type = SHT_STRTAB
+  emit_i64(0);                         // sh_flags
+  emit_i64(0);                         // sh_addr
+  emit_i64(shstrtab_offset);           // sh_offset
+  emit_i64(shstrtab_len);              // sh_size
+  emit_i32(0);                         // sh_link
+  emit_i32(0);                         // sh_info
+  emit_i64(1);                         // sh_addralign
+  emit_i64(0);                         // sh_entsize
+
+  // Fix up ELF file header and program headers.
+  patch_i64(24, start_func->label->offset);        // e_entry
+  patch_i64(40, sh_offset);                        // e_shoff
   patch_i64(EHSIZE + 32, text_filesz);             // text p_filesz
   patch_i64(EHSIZE + 40, text_filesz);             // text p_memsz
   patch_i64(EHSIZE + PHENTSIZE + 8, text_filesz);  // data p_offset
