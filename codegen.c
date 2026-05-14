@@ -175,7 +175,7 @@ static void emit_mul(void) {
 }
 
 static void emit_div_u(void) {
-  emit_bytes("\x48\x31\xc2", 3); // xor rdx, rdx
+  emit_bytes("\x48\x31\xd2", 3); // xor rdx, rdx
   emit_bytes("\x48\xf7\xf1", 3); // div rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
 }
 
@@ -411,14 +411,17 @@ static void emit_syscall(int arg_count) {
 
 static void emit_mov_fp_sp(void) { emit_bytes("\x48\x89\xe5", 3); }
 static void emit_mov_sp_fp(void) { emit_bytes("\x48\x89\xec", 3); }
+static void emit_mov_r1_sp(void) { emit_bytes("\x48\x89\xe1", 3); }
 
-static void _emit_sub_sp_r0(void) { emit_bytes("\x48\x29\xc4", 3); }
+static void emit_sub_sp_imm(int imm32) {
+  emit_bytes("\x48\x81\xec", 3);
+  emit_i32(imm32);
+}
 
 static void emit_enter(int frame_size) {
   emit_push_fp();
   emit_mov_fp_sp();
-  emit_mov_r0_imm(frame_size);
-  _emit_sub_sp_r0();
+  emit_sub_sp_imm(frame_size);
 }
 
 static void emit_leave(void) {
@@ -756,12 +759,25 @@ static int push_args(Node *arg) {
     return 0;
   }
   int n = push_args(arg->next);
-  if (arg->ty->size > 8) {
-    error_tok(arg->tok, "args larger than 8 bytes unsupported");
-  }
+
   gen_expr(arg);
-  emit_push_r0();
-  return n + 1;
+
+  switch (arg->ty->kind) {
+  case TY_STRUCT:
+  case TY_UNION: {
+    int sz = arg->ty->size;
+    int sz_aligned = align_to(sz, 8);
+    emit_sub_sp_imm(sz_aligned);
+    emit_mov_r1_sp();
+    gen_memcpy(sz);
+    n += sz_aligned / 8;
+    break;
+  }
+  default:
+    emit_push_r0();
+    n += 1;
+  }
+  return n;
 }
 
 // Generate code for a given node.
@@ -1385,7 +1401,7 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
       if (var->is_function || !var->is_definition || !var->init_data) {
         continue;
       }
-      offset = align_to(offset, var->ty->align);
+      offset = align_to(offset, var->align);
       var->offset = offset;
       offset += var->ty->size;
     }
@@ -1398,7 +1414,7 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
       if (var->is_function || !var->is_definition || var->init_data) {
         continue;
       }
-      offset = align_to(offset, var->ty->align);
+      offset = align_to(offset, var->align);
       var->offset = offset;
       offset += var->ty->size;
     }
@@ -1428,7 +1444,7 @@ static void emit_funcs(Obj *prog_obj) {
     // Assign offsets to pass-by-stack parameters.
     for (Obj *var = fn->params; var; var = var->next) {
       var->offset = top;
-      top += align_to(var->ty->size, 8);
+      top = align_to(top + var->ty->size, 8);
     }
 
     // Create stack space and assign local offsets for all locals (including
