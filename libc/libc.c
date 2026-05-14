@@ -5,45 +5,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/syscall.h>
 
-typedef struct IOVec {
-  void *data;
-  size_t length;
-} IOVec;
-
-int fd_write(int fd, IOVec *iovs, size_t iovs_len, size_t *nwritten);
-
-_Noreturn void proc_exit(int rval); 
-
-void *__brk_addr = (void *) -1;
-
-static uintptr_t get_num_pages(uintptr_t n_bytes) {
-  return (n_bytes + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
-}
-
-void *sbrk(intptr_t increment) {
-    if (__brk_addr == (void *) -1) {
-        __brk_addr = __builtin_memory_size() * WASM_PAGE_SIZE;
-    }
-    if (increment < 0) {
-        return (void *) -1;
-    }
-    if (increment == 0) {
-        return __brk_addr;
-    }
-    void *cur_brk_addr = __brk_addr;
-    uintptr_t cur_pages = get_num_pages((uintptr_t) __brk_addr);
-    void *new_brk_addr = (uintptr_t) __brk_addr + (uintptr_t) increment;
-    uintptr_t new_pages = get_num_pages((uintptr_t) new_brk_addr);
-    if (new_pages > cur_pages) {
-        if (__builtin_memory_grow(new_pages - cur_pages) == -1) {
-            return (void *) -1;
-        }
-    }
-    __brk_addr = new_brk_addr;
-    return cur_brk_addr;
-}
-
+#define __HEAP_SIZE (64 * 1024 * 1024)
+uint8_t __heap_base[__HEAP_SIZE];
+size_t __heap_top = 0;
 
 void *memset(void *s, int c, size_t n) {
     uint8_t c2 = (uint8_t) c;
@@ -62,10 +29,11 @@ void *memcpy(void *dest, const void *src, size_t n) {
 
 void *malloc(size_t size) {
     // Bump allocator.
-    void *p = sbrk((intptr_t) size);
-    if (p == (void *) -1) {
+    if (__heap_top + size > __HEAP_SIZE) {
         return NULL;
     }
+    void *p = __heap_base + __heap_top;
+    __heap_top = (__heap_top + size + 7) & ~7;
     return p;
 }
 
@@ -83,20 +51,18 @@ void *calloc(size_t n, size_t size) {
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    IOVec vec = {
-        .data = buf,
-        .length = count,
-    };
-    int nwritten = 0;
-    int err = fd_write(1, &vec, 1, &nwritten);
-    if (err) {
-        return -1;
-    }
-    return (ssize_t) nwritten;
+    ssize_t err = __builtin_syscall3(SYS_write, fd, buf, count);
+    return err;
+}
+
+_Noreturn void _exit(int status) {
+    // TODO : should be SYS_exit_group?
+    __builtin_syscall3(SYS_exit, status, 0, 0);
 }
 
 _Noreturn void exit(int status) {
-    proc_exit(status);
+    // Note : exit usually calls atexit and on_exit handlers.
+    _exit(status);
 }
 
 int memcmp(const void *s1, const void *s2, size_t n) {
@@ -137,10 +103,7 @@ int strcmp(const char *s1, const char *s2) {
 
 void *__va_arg(__va_elem *ap, int sz, int align) {
   void *p = ap->arg_area;
-  if (align > 8) {
-    p = ((unsigned long)p + 15) / 16 * 16;
-  }
-  ap->arg_area = ((unsigned long)p + sz + 7) / 8 * 8;
+  ap->arg_area = (void *)(((uintptr_t)p + sz + 7) & ~7);
   return p;
 }
 
@@ -150,12 +113,12 @@ int puts(const char *s) {
 
 static int format_decimal(char *buf, int val) {
     if (val == 0) {
-        buf[0] = "0";
+        buf[0] = '0';
         return 1;
     }
     int pos = 0;
     if (val < 0) {
-        buf[pos] = "-";
+        buf[pos] = '-';
         pos += 1;
         val = -val;
     }
@@ -278,5 +241,5 @@ int sprintf(char *buf, const char *fmt, ...) {
 
 int main(void);
 void _start(void) {
-    proc_exit(main());
+    _exit(main());
 }

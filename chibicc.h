@@ -156,6 +156,7 @@ struct Obj {
   bool is_function;
   bool is_definition;
   bool is_static;
+  bool is_builtin;
   Label *label;
 
   // Global variable
@@ -251,6 +252,7 @@ typedef enum {
   ND_ASM,       // "asm"
   ND_CAS,       // Atomic compare-and-swap
   ND_EXCH,      // Atomic exchange
+  ND_BKPT,      // Software breakpoint.
 } NodeKind;
 
 // AST node type
@@ -280,7 +282,6 @@ struct Node {
   Type *func_ty;
   Node *args;
   Obj *ret_buffer;
-  Obj *va_arg_area;
   Node *funcall_next;
 
   // Goto or labeled statement, or labels-as-values
@@ -442,67 +443,6 @@ void add_type(Node *node);
 //
 // codegen.c
 //
-
-enum {
-  BC_NOP,
-  BC_MOV_R0_IMM,
-  BC_MOV_R1_IMM,
-  BC_PUSH_R0,
-  BC_PUSH_R1,
-  BC_POP_R0,
-  BC_POP_R1,
-  BC_PUSH_FP,
-  BC_MOV_R0_R1,
-  BC_MOV_R1_R0,
-  BC_ADD,
-  BC_SUB,
-  BC_MUL,
-  BC_DIV_U,
-  BC_DIV_S,
-  BC_REM_U,
-  BC_REM_S,
-  BC_AND,
-  BC_OR,
-  BC_XOR,
-  BC_SHL,
-  BC_SHR_U,
-  BC_SHR_S,
-  BC_NOT,
-  BC_NEG,
-  BC_TRUNC_8,
-  BC_TRUNC_16,
-  BC_TRUNC_32,
-  BC_SEXT_8,
-  BC_SEXT_16,
-  BC_SEXT_32,
-  BC_EQ_ZERO,
-  BC_EQ,
-  BC_NE,
-  BC_LT_U,
-  BC_LT_S,
-  BC_LE_U,
-  BC_LE_S,
-  BC_LOAD_U64,
-  BC_LOAD_U32,
-  BC_LOAD_U16,
-  BC_LOAD_U8,
-  BC_STORE_U64,
-  BC_STORE_U32,
-  BC_STORE_U16,
-  BC_STORE_U8,
-  BC_JMP,
-  BC_JZ,
-  BC_JNZ,
-  BC_LEA_PC_REL,
-  BC_LEA_FP_REL,
-  BC_PICK,
-  BC_CALL,
-  BC_SYSCALL6,
-  BC_ENTER,
-  BC_LEAVE,
-  BC_MEMSET,
-  BC_MEMCPY,
-};
 
 struct Prog {
   Prog *next;

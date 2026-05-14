@@ -34,7 +34,6 @@ static Label *current_continue_label = NULL;
 static Label *labels = NULL;
 
 static void gen_expr(Node *node);
-static void _gen_stmt(Node *node, bool should_drop_result);
 static void gen_stmt(Node *node);
 
 static Label *new_label(LabelKind kind) {
@@ -65,7 +64,7 @@ static LabelRef *label_add_ref(Label *label, LabelKind ref_kind) {
 }
 
 static void emit_bytes(char *data, int n) {
-  bytearray_extend(current_out, (uint8_t*)data, n);
+  bytearray_extend(current_out, (uint8_t *)data, n);
   current_offset += n;
   current_vaddr += n;
 }
@@ -119,120 +118,381 @@ static void patch_i64(int offset, int64_t val) {
   buf[offset + 7] = (val >> 56) & 0xff;
 }
 
-#define DEF_EMIT_INSN(name, opcode) \
-  static void name() { \
-    emit_u8(opcode); \
-  }
-
-DEF_EMIT_INSN(nop, BC_NOP);
-DEF_EMIT_INSN(emit_push_r0, BC_PUSH_R0);
-DEF_EMIT_INSN(emit_push_r1, BC_PUSH_R1);
-DEF_EMIT_INSN(emit_pop_r0, BC_POP_R0);
-DEF_EMIT_INSN(emit_pop_r1, BC_POP_R1);
-DEF_EMIT_INSN(emit_push_fp, BC_PUSH_FP);
-DEF_EMIT_INSN(emit_mov_r0_r1, BC_MOV_R0_R1);
-DEF_EMIT_INSN(emit_mov_r1_r0, BC_MOV_R1_R0);
-DEF_EMIT_INSN(emit_add, BC_ADD);
-DEF_EMIT_INSN(emit_sub, BC_SUB);
-DEF_EMIT_INSN(emit_mul, BC_MUL);
-DEF_EMIT_INSN(emit_div_u, BC_DIV_U);
-DEF_EMIT_INSN(emit_div_s, BC_DIV_S);
-DEF_EMIT_INSN(emit_rem_u, BC_REM_U);
-DEF_EMIT_INSN(emit_rem_s, BC_REM_S);
-DEF_EMIT_INSN(emit_and, BC_AND);
-DEF_EMIT_INSN(emit_or, BC_OR);
-DEF_EMIT_INSN(emit_xor, BC_XOR);
-DEF_EMIT_INSN(emit_shl, BC_SHL);
-DEF_EMIT_INSN(emit_shr_u, BC_SHR_U);
-DEF_EMIT_INSN(emit_shr_s, BC_SHR_S);
-DEF_EMIT_INSN(emit_not, BC_NOT);
-DEF_EMIT_INSN(emit_neg, BC_NEG);
-DEF_EMIT_INSN(emit_trunc_8, BC_TRUNC_8);
-DEF_EMIT_INSN(emit_trunc_16, BC_TRUNC_16);
-DEF_EMIT_INSN(emit_trunc_32, BC_TRUNC_32);
-DEF_EMIT_INSN(emit_sext_8, BC_SEXT_8);
-DEF_EMIT_INSN(emit_sext_16, BC_SEXT_16);
-DEF_EMIT_INSN(emit_sext_32, BC_SEXT_32);
-DEF_EMIT_INSN(emit_eq_zero, BC_EQ_ZERO);
-DEF_EMIT_INSN(emit_eq, BC_EQ);
-DEF_EMIT_INSN(emit_ne, BC_NE);
-DEF_EMIT_INSN(emit_lt_u, BC_LT_U);
-DEF_EMIT_INSN(emit_lt_s, BC_LT_S);
-DEF_EMIT_INSN(emit_le_u, BC_LE_U);
-DEF_EMIT_INSN(emit_le_s, BC_LE_S);
-DEF_EMIT_INSN(emit_load_u64, BC_LOAD_U64);
-DEF_EMIT_INSN(emit_load_u32, BC_LOAD_U32);
-DEF_EMIT_INSN(emit_load_u16, BC_LOAD_U16);
-DEF_EMIT_INSN(emit_load_u8, BC_LOAD_U8);
-DEF_EMIT_INSN(emit_store_u64, BC_STORE_U64);
-DEF_EMIT_INSN(emit_store_u32, BC_STORE_U32);
-DEF_EMIT_INSN(emit_store_u16, BC_STORE_U16);
-DEF_EMIT_INSN(emit_store_u8, BC_STORE_U8);
-DEF_EMIT_INSN(emit_call, BC_CALL);
-DEF_EMIT_INSN(emit_syscall6, BC_SYSCALL6);
-DEF_EMIT_INSN(emit_leave, BC_LEAVE);
-DEF_EMIT_INSN(emit_memset, BC_MEMSET);
-DEF_EMIT_INSN(emit_memcpy, BC_MEMCPY);
+// x86-64 emit functions
+// r0 = rax, r1 = rcx, sp = rsp, fp = rbp
 
 static void emit_mov_r0_imm(int64_t val) {
-  emit_u8(BC_MOV_R0_IMM);
-  emit_i64(val);
+  if (val == 0) {
+    // xor rax, rax
+    emit_bytes("\x48\x31\xc0", 3);
+  } else if (val >= INT32_MIN && val <= INT32_MAX) {
+    // mov rax, imm32
+    emit_bytes("\x48\xc7\xc0", 3);
+    emit_i32((int32_t)val);
+  } else {
+    // movabs rax, imm64
+    emit_bytes("\x48\xb8", 2);
+    emit_i64(val);
+  }
 }
 
 static void emit_mov_r1_imm(int64_t val) {
-  emit_u8(BC_MOV_R1_IMM);
-  emit_i64(val);
+  if (val == 0) {
+    // xor rcx, rcx
+    emit_bytes("\x48\x31\xc9", 3);
+  } else if (val >= INT32_MIN && val <= INT32_MAX) {
+    // mov rcx, imm32
+    emit_bytes("\x48\xc7\xc1", 3);
+    emit_i32((int32_t)val);
+  } else {
+    // movabs rcx, imm64
+    emit_bytes("\x48\xb9", 2);
+    emit_i64(val);
+  }
 }
 
-static void emit_jmp_rel32(int dst) {
-  emit_u8(BC_JMP);
-  emit_i32(dst - (current_vaddr + 4));
+static void emit_push_r0(void) { emit_u8(0x50); }
+static void emit_push_r1(void) { emit_u8(0x51); }
+static void emit_pop_r0(void) { emit_u8(0x58); }
+static void emit_pop_r1(void) { emit_u8(0x59); }
+
+static void emit_push_fp(void) { emit_u8(0x55); }
+static void emit_pop_fp(void) { emit_u8(0x5d); }
+
+static void emit_mov_r0_r1(void) { emit_bytes("\x48\x89\xc8", 3); }
+static void emit_mov_r1_r0(void) { emit_bytes("\x48\x89\xc1", 3); }
+
+static void emit_add(void) {
+  emit_bytes("\x48\x01\xc8", 3); // add rax, rcx
 }
 
-static void emit_jz_rel32(int dst) {
-  emit_u8(BC_JZ);
-  emit_i32(dst - (current_vaddr + 4));
+static void emit_sub(void) {
+  emit_bytes("\x48\x29\xc8", 3); // sub rax, rcx
 }
 
-static void emit_jnz_rel32(int dst) {
-  emit_u8(BC_JNZ);
-  emit_i32(dst - (current_vaddr + 4));
+static void emit_mul(void) {
+  emit_bytes("\x48\x0f\xaf\xc1", 4); // imul rax, rcx
 }
+
+static void emit_div_u(void) {
+  emit_bytes("\x48\x31\xc2", 3); // xor rdx, rdx
+  emit_bytes("\x48\xf7\xf1", 3); // div rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
+}
+
+static void emit_div_s(void) {
+  emit_bytes("\x48\x99", 2);     // cqo (extend rax to rdx:rax)
+  emit_bytes("\x48\xf7\xf9", 3); // idiv rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
+}
+
+static void emit_rem_u(void) {
+  emit_div_u();
+  emit_bytes("\x48\x89\xd0", 3); // mov rax, rdx
+}
+
+static void emit_rem_s(void) {
+  emit_div_s();
+  emit_bytes("\x48\x89\xd0", 3); // mov rax, rdx
+}
+
+static void emit_or(void) {
+  emit_bytes("\x48\x09\xc8", 3); // or rax, rcx
+}
+
+static void emit_and(void) {
+  emit_bytes("\x48\x21\xc8", 3); // and rax, rcx
+}
+
+static void emit_xor(void) {
+  emit_bytes("\x48\x31\xc8", 3); // xor rax, rcx
+}
+
+static void emit_shl(void) {
+  emit_bytes("\x48\xd3\xe0", 3); // shl rax, cl
+}
+
+static void emit_shr_u(void) {
+  emit_bytes("\x48\xd3\xe8", 3); // shr rax, cl
+}
+
+static void emit_shr_s(void) {
+  emit_bytes("\x48\xd3\xf8", 3); // sar rax, rcl
+}
+
+static void emit_not(void) {
+  emit_bytes("\x48\xf7\xd0", 3);
+}
+
+static void emit_neg(void) {
+  emit_bytes("\x48\xf7\xd8", 3);
+}
+
+static void emit_zext_8(void) {
+  // This is actually 'movzx eax,al'.
+  // Top 32-bits are cleared, so it is the same as 'movzx rax,al'.
+  emit_bytes("\x0f\xb6\xc0", 3);
+}
+static void emit_zext_16(void) {
+  // movzx eax,ax
+  emit_bytes("\x0f\xb7\xc0", 3);
+}
+static void emit_zext_32(void) {
+  // mov eax,eax
+  emit_bytes("\x89\xc0", 2);
+}
+
+static void emit_sext_8(void) { emit_bytes("\x48\x0f\xbe\xc0", 4); }
+static void emit_sext_16(void) { emit_bytes("\x48\x0f\xbf\xc0", 4); }
+static void emit_sext_32(void) { emit_bytes("\x48\x63\xc0", 3); }
+
+static void _emit_cmp_rax_rcx(void) { emit_bytes("\x48\x39\xc8", 3); }
+static void _emit_tst_rax_rax(void) { emit_bytes("\x48\x85\xc0", 3); }
+
+static void _emit_sete(void) { emit_bytes("\x0f\x94\xc0", 3); }
+static void _emit_setne(void) { emit_bytes("\x0f\x95\xc0", 3); }
+static void _emit_setb(void) { emit_bytes("\x0f\x92\xc0", 3); }
+static void _emit_setbe(void) { emit_bytes("\x0f\x96\xc0", 3); }
+static void _emit_setl(void) { emit_bytes("\x0f\x9c\xc0", 3); }
+static void _emit_setle(void) { emit_bytes("\x0f\x9e\xc0", 3); }
+
+static void emit_eq_zero(void) {
+  _emit_tst_rax_rax();
+  _emit_sete();
+  emit_zext_8();
+}
+
+static void emit_ne_zero(void) {
+  _emit_tst_rax_rax();
+  _emit_setne();
+  emit_zext_8();
+}
+
+static void emit_eq(void) {
+  _emit_cmp_rax_rcx();
+  _emit_sete();
+  emit_zext_8();
+}
+
+static void emit_ne(void) {
+  _emit_cmp_rax_rcx();
+  _emit_setne();
+  emit_zext_8();
+}
+
+static void emit_lt_u(void) {
+  _emit_cmp_rax_rcx();
+  _emit_setb();
+  emit_zext_8();
+}
+
+static void emit_lt_s(void) {
+  _emit_cmp_rax_rcx();
+  _emit_setl();
+  emit_zext_8();
+}
+
+static void emit_le_u(void) {
+  _emit_cmp_rax_rcx();
+  _emit_setbe();
+  emit_zext_8();
+}
+
+static void emit_le_s(void) {
+  _emit_cmp_rax_rcx();
+  _emit_setle();
+  emit_zext_8();
+}
+
+static void emit_store_u64(void) {
+  // mov qword ptr [rcx], rax
+  emit_bytes("\x48\x89\x01", 3);
+}
+
+static void emit_store_u32(void) {
+  // mov dword ptr [rcx], eax
+  emit_bytes("\x89\x01", 2);
+}
+
+static void emit_store_u16(void) {
+  // mov word ptr [rcx], ax
+  emit_bytes("\x66\x89\x01", 3);
+}
+
+static void emit_store_u8(void) {
+  // mov byte ptr [rcx], al
+  emit_bytes("\x88\x01", 2);
+}
+
+static void emit_load_u64(void) {
+  // mov rax, qword ptr [rax]
+  emit_bytes("\x48\x8b\x00", 3);
+}
+
+static void emit_load_u32(void) {
+  // mov eax, dword ptr [rax]
+  emit_bytes("\x8b\x00", 2);
+}
+
+static void emit_load_u16(void) {
+  // movzx eax, word ptr [rax]
+  emit_bytes("\x0f\xb7\x00", 3);
+}
+
+static void emit_load_u8(void) {
+  // movzx eax, byte ptr [rax]
+  emit_bytes("\x0f\xb6\x00", 3);
+}
+
+static void emit_call(void) { emit_bytes("\xff\xd0", 2); }
+static void _emit_ret(void) { emit_u8(0xc3); }
 
 static void emit_jmp(Label *label) {
-  emit_jmp_rel32(0);
+  // jmp rel32
+  emit_bytes("\xe9\x00\x00\x00\x00", 5);
   label_add_ref(label, LABEL_CODE);
 }
 
 static void emit_jz(Label *label) {
-  emit_jz_rel32(0);
+  _emit_tst_rax_rax();
+  // jz rel32
+  emit_bytes("\x0f\x84\x00\x00\x00\x00", 6);
   label_add_ref(label, LABEL_CODE);
 }
 
 static void emit_jnz(Label *label) {
-  emit_jnz_rel32(0);
+  _emit_tst_rax_rax();
+  // jnz rel32
+  emit_bytes("\x0f\x85\x00\x00\x00\x00", 6);
   label_add_ref(label, LABEL_CODE);
 }
 
 static void emit_lea_pc_rel(Label *label) {
-  emit_u8(BC_LEA_PC_REL);
-  emit_i32(0);
+  emit_bytes("\x48\x8d\x05\x00\x00\x00\x00", 7);
   label_add_ref(label, LABEL_CODE);
 }
 
 static void emit_lea_fp_rel(int offset) {
-  emit_u8(BC_LEA_FP_REL);
+  // lea rax,[rbp+offset]
+  emit_bytes("\x48\x8d\x85", 3);
   emit_i32(offset);
 }
 
-static void emit_pick(int offset) {
-  emit_u8(BC_PICK);
-  emit_i32(offset);
+static void emit_syscall(int arg_count) {
+  if (arg_count > 6) {
+    error("too many syscall args");
+  }
+  // syscall number should be in r0 (rax).
+  // pop rdi (arg 1)
+  if (arg_count >= 1) {
+    emit_bytes("\x5f", 1);
+  }
+  // pop rsi (arg 2)
+  if (arg_count >= 2) {
+    emit_bytes("\x5e", 1);
+  }
+  // pop rdx (arg 3)
+  if (arg_count >= 3) {
+    emit_bytes("\x5a", 1);
+  }
+  // pop r10 (arg 4)
+  if (arg_count >= 4) {
+    emit_bytes("\x41\x5a", 2);
+  }
+  // pop r8 (arg 5)
+  if (arg_count >= 5) {
+    emit_bytes("\x41\x58", 2);
+  }
+  // pop r9 (arg 6)
+  if (arg_count >= 6) {
+    emit_bytes("\x41\x59", 2);
+  }
+  // syscall
+  emit_bytes("\x0f\x05", 2);
 }
+
+static void emit_mov_fp_sp(void) { emit_bytes("\x48\x89\xe5", 3); }
+static void emit_mov_sp_fp(void) { emit_bytes("\x48\x89\xec", 3); }
+
+static void _emit_sub_sp_r0(void) { emit_bytes("\x48\x29\xc4", 3); }
 
 static void emit_enter(int frame_size) {
-  emit_u8(BC_ENTER);
-  emit_i32(frame_size);
+  emit_push_fp();
+  emit_mov_fp_sp();
+  emit_mov_r0_imm(frame_size);
+  _emit_sub_sp_r0();
+}
+
+static void emit_leave(void) {
+  emit_mov_sp_fp();
+  emit_pop_fp();
+  _emit_ret();
+}
+
+static void emit_add_sp_imm(int imm32) {
+  emit_bytes("\x48\x81\xc4", 3);
+  emit_i32(imm32);
+}
+
+static void emit_breakpoint(void) {
+  emit_bytes("\xcc", 1);
+}
+
+static void gen_memcpy(int size) {
+  // dst=rcx, src=rax.
+  switch (size) {
+  case 1:
+    emit_load_u8();
+    emit_store_u8();
+    break;
+  case 2:
+    emit_load_u16();
+    emit_store_u16();
+    break;
+  case 4:
+    emit_load_u32();
+    emit_store_u32();
+    break;
+  case 8:
+    emit_load_u64();
+    emit_store_u64();
+    break;
+  default:
+    // mov rdi,rcx
+    emit_bytes("\x48\x89\xcf", 3);
+    // mov rsi,rax
+    emit_bytes("\x48\x89\xc6", 3);
+    emit_mov_r1_imm(size);
+    // cld
+    // rep movsb
+    emit_bytes("\xfc\xf3\xa4", 3);
+    break;
+  }
+}
+
+static void gen_memzero(int size) {
+  // dst=rcx
+  emit_mov_r0_imm(0);
+  switch (size) {
+  case 1:
+    emit_store_u8();
+    break;
+  case 2:
+    emit_store_u16();
+    break;
+  case 4:
+    emit_store_u32();
+    break;
+  case 8:
+    emit_store_u64();
+    break;
+  default:
+    // mov rdi,rcx
+    emit_bytes("\x48\x89\xcf", 3);
+    emit_mov_r1_imm(size);
+    // cld
+    // rep stosb
+    emit_bytes("\xfc\xf3\xaa", 3);
+    break;
+  }
 }
 
 // Round up `n` to the nearest multiple of `align`. For instance,
@@ -255,14 +515,30 @@ static void gen_is_eq_zero(Type *ty) {
     emit_eq_zero();
     break;
   default:
-    error("cmp_zero: bad type %d", ty->kind);
+    error("gen_is_eq_zero: bad type %d", ty->kind);
     break;
   }
 }
 
 static void gen_is_ne_zero(Type *ty) {
-  gen_is_eq_zero(ty);
-  emit_eq_zero();
+  switch (ty->kind) {
+  case TY_BOOL:
+  case TY_CHAR:
+  case TY_SHORT:
+  case TY_INT:
+  case TY_ENUM:
+  case TY_LONG:
+  case TY_LONGLONG:
+  case TY_PTR:
+  case TY_FUNC:
+  case TY_ARRAY:
+  case TY_VLA:
+    emit_ne_zero();
+    break;
+  default:
+    error("gen_is_ne_zero: bad type %d", ty->kind);
+    break;
+  }
 }
 
 static void gen_lvar_addr(Obj *var) {
@@ -347,18 +623,31 @@ static void load(Type *ty) {
     return;
   case TY_FLOAT:
   case TY_DOUBLE:
-    error("cannot load type");
+    error("cannot load float or double types");
     return;
   default:
     break;
   }
 
-  if (ty->size == 1 && ty->is_unsigned) {
+  if (ty->size == 1) {
     emit_load_u8();
+    if (!ty->is_unsigned) {
+      emit_sext_8();
+    }
+  } else if (ty->size == 2) {
+    emit_load_u16();
+    if (!ty->is_unsigned) {
+      emit_sext_16();
+    }
+  } else if (ty->size == 4) {
+    emit_load_u32();
+    if (!ty->is_unsigned) {
+      emit_sext_32();
+    }
   } else if (ty->size == 8) {
     emit_load_u64();
   } else {
-    error("cannot load type");
+    error("cannot load type with size %d", ty->size);
   }
 }
 
@@ -367,12 +656,11 @@ static void store(Type *ty) {
   switch (ty->kind) {
   case TY_STRUCT:
   case TY_UNION:
-    // [dst src n] -> []
+    emit_push_r0();
     emit_push_r1();
-    emit_push_r0();
-    emit_mov_r0_imm(ty->size);
-    emit_push_r0();
-    emit_memcpy();
+    gen_memcpy(ty->size);
+    emit_pop_r1();
+    emit_pop_r0();
     return;
   case TY_FLOAT:
   case TY_DOUBLE:
@@ -384,6 +672,10 @@ static void store(Type *ty) {
 
   if (ty->size == 1) {
     emit_store_u8();
+  } else if (ty->size == 2) {
+    emit_store_u16();
+  } else if (ty->size == 4) {
+    emit_store_u32();
   } else if (ty->size == 8) {
     emit_store_u64();
   } else {
@@ -408,22 +700,6 @@ static void cast(Type *from, Type *to) {
     error("casts to floating point types unsupported");
   }
 
-  int from_size = from->size;
-  switch (from->kind) {
-  case TY_BOOL:
-  case TY_CHAR:
-  case TY_SHORT:
-  case TY_INT:
-  case TY_ENUM:
-  case TY_LONG:
-  case TY_LONGLONG:
-    from_size = from->size;
-    break;
-  default:
-    from_size = PTR_SIZE;
-    break;
-  }
-
   int to_size;
   switch (to->kind) {
   case TY_BOOL:
@@ -443,13 +719,13 @@ static void cast(Type *from, Type *to) {
   // Truncate to target size first.
   switch (to_size) {
   case 1:
-    emit_trunc_8();
+    emit_zext_8();
     break;
   case 2:
-    emit_trunc_16();
+    emit_zext_16();
     break;
   case 4:
-    emit_trunc_32();
+    emit_zext_32();
     break;
   default:
     break;
@@ -471,6 +747,21 @@ static void cast(Type *from, Type *to) {
       break;
     }
   }
+}
+
+// Recursive function to push args in right-to-left order.
+// Needed as the args linked list is naturally in left-to-right order.
+static int push_args(Node *arg) {
+  if (arg == NULL) {
+    return 0;
+  }
+  int n = push_args(arg->next);
+  if (arg->ty->size > 8) {
+    error_tok(arg->tok, "args larger than 8 bytes unsupported");
+  }
+  gen_expr(arg);
+  emit_push_r0();
+  return n + 1;
 }
 
 // Generate code for a given node.
@@ -537,7 +828,10 @@ static void gen_expr(Node *node) {
     return;
   }
   case ND_STMT_EXPR:
-    error_tok(node->tok, "statement expressions unsupported");
+    // GNU statement expression: `({ stmt; stmt; stmt; })`.
+    for (Node *n = node->body; n; n = n->next) {
+      gen_stmt(n);
+    }
     return;
   case ND_COMMA:
     gen_expr(node->lhs);
@@ -550,25 +844,15 @@ static void gen_expr(Node *node) {
   case ND_MEMZERO:
     // Node is always a local var.
     gen_lvar_addr(node->var);
-    if (node->var->ty->size == 8) {
-      emit_mov_r1_r0();
-      emit_mov_r0_imm(0);
-      emit_store_u64();
-    } else {
-      emit_push_r0();
-      emit_mov_r0_imm(0);
-      emit_push_r0();
-      emit_mov_r0_imm(node->var->ty->size);
-      emit_push_r0();
-      emit_memset();
-    }
+    emit_mov_r1_r0();
+    gen_memzero(node->var->ty->size);
     return;
   case ND_COND: {
     // Ternary expression.
     Label *else_label = new_label(LABEL_CODE);
     Label *end_label = new_label(LABEL_CODE);
     gen_expr(node->cond);
-    gen_is_eq_zero(node->cond->ty);
+    gen_is_ne_zero(node->cond->ty);
     emit_jz(else_label);
     gen_expr(node->then);
     emit_jmp(end_label);
@@ -614,45 +898,27 @@ static void gen_expr(Node *node) {
       if (strcmp(node->lhs->var->name, "alloca") == 0) {
         error_tok(node->tok, "alloca builtin not supported");
         return;
-      }
-      else if (strcmp(node->lhs->var->name, "__builtin_syscall3") == 0) {
-        gen_expr(node->args);
-        emit_push_r0();
-        gen_expr(node->args->next);
-        emit_push_r0();
-        gen_expr(node->args->next->next);
-        emit_push_r0();
+      } else if (strcmp(node->lhs->var->name, "__builtin_syscall3") == 0) {
         gen_expr(node->args->next->next->next);
         emit_push_r0();
-        emit_mov_r0_imm(0);
-        emit_push_r0();
-        emit_push_r0();
-        emit_push_r0();
-        emit_syscall6();
-        return;
-      } else if (strcmp(node->lhs->var->name, "__builtin_memory_fill") == 0) {
-        gen_expr(node->args);
+        gen_expr(node->args->next->next);
         emit_push_r0();
         gen_expr(node->args->next);
         emit_push_r0();
-        gen_expr(node->args->next->next);
-        emit_push_r0();
-        emit_memset();
-        return;
-      } else if (strcmp(node->lhs->var->name, "__builtin_memory_copy") == 0) {
+        // syscall number in r0, not on stack.
         gen_expr(node->args);
-        emit_push_r0();
-        gen_expr(node->args->next);
-        emit_push_r0();
-        gen_expr(node->args->next->next);
-        emit_push_r0();
-        emit_memcpy();
+        emit_syscall(3);
         return;
       }
     }
 
-    // Build args.
-    Type *func_ty = node->func_ty;
+    // Push args onto the stack in right-to-left order.
+    // Could push in left-to-right order, but that makes generating the code
+    // for variadic functions harder, as the first arg is not at a fixed
+    // offset relative to the frame pointer.
+    // Note that this does NOT match x86-64 SysV ABI, so we can't call code
+    // generated by other compilers.
+    int arg_count = push_args(node->args);
 
     // If the return type is a struct/union, the caller passes
     // a pointer to a stack buffer as if it were the first argument.
@@ -662,37 +928,15 @@ static void gen_expr(Node *node) {
     if (returns_struct) {
       gen_lvar_addr(node->ret_buffer);
       emit_push_r0();
-    }
-
-    // Push each non-variadic arg onto the stack in left to right order.
-    for (Node *arg = node->args; arg; arg = arg->next) {
-      if (arg->ty->size > 8) {
-        error_tok(arg->tok, "args larger than 8 bytes unsupported");
-      }
-      gen_expr(arg);
-      emit_push_r0();
-    }
-
-    // Collect remaining variadic args into the 'va_arg_area' local for this
-    // call-site.
-    if (node->va_arg_area) {
-      error_tok(node->tok, "variadic function calls unsupported");
-      // int offset = 0;
-      // for (; arg; arg = arg->next) {
-      //   offset = align_to(offset, arg->ty->align);
-      //   gen_lvar_addr(node->va_arg_area);
-      //   fmt_insn("i32.const %d", offset);
-      //   put_insn("i32.add");
-      //   gen_expr(arg);
-      //   store(arg->ty);
-      //   offset += arg->ty->size;
-      // }
-      // gen_lvar_addr(node->va_arg_area);
+      arg_count += 1;
     }
 
     // Call the function.
     gen_expr(node->lhs);
     emit_call();
+
+    // Drop args.
+    emit_add_sp_imm(arg_count * 8);
 
     // If the function returns a struct get the address of the local var it is
     // stored in.
@@ -710,6 +954,9 @@ static void gen_expr(Node *node) {
     return;
   case ND_EXCH:
     error_tok(node->tok, "atomic exchange builtin not supported");
+    return;
+  case ND_BKPT:
+    emit_breakpoint();
     return;
   default:
     break;
@@ -886,7 +1133,7 @@ static void gen_stmt(Node *node) {
     Label *end_label = new_label(LABEL_CODE);
 
     gen_expr(node->cond);
-    gen_is_eq_zero(node->cond->ty);
+    gen_is_ne_zero(node->cond->ty);
     emit_jz(else_label);
     if (node->then) {
       gen_stmt(node->then);
@@ -910,7 +1157,7 @@ static void gen_stmt(Node *node) {
     label_set_dest(cond_label);
     if (node->cond) {
       gen_expr(node->cond);
-      gen_is_eq_zero(node->cond->ty);
+      gen_is_ne_zero(node->cond->ty);
       emit_jz(end_label);
     }
     if (node->then) {
@@ -947,7 +1194,7 @@ static void gen_stmt(Node *node) {
     }
     label_set_dest(cond_label);
     gen_expr(node->cond);
-    gen_is_eq_zero(node->cond->ty);
+    gen_is_ne_zero(node->cond->ty);
     emit_jnz(start_label);
     label_set_dest(end_label);
     return;
@@ -1030,7 +1277,8 @@ static void gen_stmt(Node *node) {
     error_tok(node->tok, "goto expr not supported");
     return;
   case ND_LABEL: {
-    // node->goto_label should have been initialized in emit_funcs before code is emitted.
+    // node->goto_label should have been initialized in emit_funcs before code
+    // is emitted.
     label_set_dest(node->goto_label);
     gen_stmt(node->lhs);
     return;
@@ -1046,10 +1294,9 @@ static void gen_stmt(Node *node) {
         gen_lvar_addr(ret_buffer_var);
         emit_push_r0();
         gen_addr(node->lhs);
-        emit_push_r0();
-        emit_mov_r0_imm(ty->size);
-        emit_push_r0();
-        emit_memcpy();
+        emit_pop_r1();
+        gen_memcpy(ty->size);
+        emit_mov_r0_imm(0);
       } else {
         gen_expr(node->lhs);
       }
@@ -1113,7 +1360,7 @@ static void resolve_names(Prog *progs) {
   // Find definitions for remaining global vars and functions.
   for (Prog *prog = progs; prog; prog = prog->next) {
     for (Obj *var = prog->obj; var; var = var->next) {
-      if (var->is_definition || var->label != NULL) {
+      if (var->is_definition || var->is_builtin || var->label != NULL) {
         continue;
       }
       // First try to look up in current translation unit.
@@ -1122,14 +1369,15 @@ static void resolve_names(Prog *progs) {
         var_def = find_exported_obj(progs, var->name);
       }
       if (var_def == NULL) {
-        error_tok(var->tok, "unable to resolve");
+        error_tok(var->tok, "unable to resolve: %s", var->name);
       }
       var->label = var_def->label;
     }
   }
 }
 
-static void calculate_gvar_offsets(Prog *progs, int *data_filesz, int *data_memsz) {
+static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
+                                   int *data_memsz) {
   // Calculate offsets of global vars with initialization data.
   int offset = 0;
   for (Prog *prog = progs; prog; prog = prog->next) {
@@ -1164,26 +1412,23 @@ static void emit_funcs(Obj *prog_obj) {
     if (!fn->is_function || !fn->is_live || !fn->is_definition) {
       continue;
     }
+
     current_fn = fn;
     current_return_label = new_label(LABEL_CODE);
 
-    Type *return_ty = fn->ty->return_ty;
-    bool returns_struct = (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
-    bool has_result = ((return_ty->kind != TY_VOID) && !returns_struct);
+    // Type *return_ty = fn->ty->return_ty;
+    // bool returns_struct =
+    //     (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
 
     // The last pushed param resides at fp+16.
-    // Params are added left-to-right so this is the rightmost param.
+    // Params are added right-to-left so this is the first param.
     int top = 16;
     int bottom = 0;
 
     // Assign offsets to pass-by-stack parameters.
     for (Obj *var = fn->params; var; var = var->next) {
+      var->offset = top;
       top += align_to(var->ty->size, 8);
-    }
-    int param_offset = top;
-    for (Obj *var = fn->params; var; var = var->next) {
-      param_offset -= align_to(var->ty->size, 8);
-      var->offset = param_offset;
     }
 
     // Create stack space and assign local offsets for all locals (including
@@ -1193,9 +1438,11 @@ static void emit_funcs(Obj *prog_obj) {
       if (var->offset) {
         continue;
       }
-      bottom += align_to(var->ty->size, var->align);
+      bottom = align_to(bottom + var->ty->size, var->align);
       var->offset = -bottom;
     }
+
+    int frame_size = align_to(bottom, 16);
 
     // Set label destination.
     label_set_dest(fn->label);
@@ -1205,29 +1452,22 @@ static void emit_funcs(Obj *prog_obj) {
     //   push fp
     //   mov fp, sp
     //   sub sp, frame_size
-    emit_enter(bottom);
+    emit_enter(frame_size);
 
-    // Count params.
-    int param_count = 0;
-    for (Obj *var = fn->params; var; var = var->next) {
-      param_count++;
-    }
-
-    // For variadic functions setup the hidden __va_area__ local var.
-    // The last parameter (also hidden) is a pointer to a stack buffer in the
-    // callers stack frame that contains the variadic args.
-    // TODO : implement.
+    // For variadic functions need to initialize the hidden __va_area__ local var.
     if (fn->va_area) {
-      // gen_lvar_addr(fn->va_area);
-      // fmt_insn("local.get $p%d", param_count);
-      // put_insn("i32.store");
-      error("variadic functions not supported");
+      // Store address of first variadic arg at __va_area__[0].
+      gen_lvar_addr(fn->va_area);
+      emit_mov_r1_r0();
+      emit_lea_fp_rel(top);
+      emit_store_u64();
     }
 
     // Create label for each label node, and add that label to each goto node
     // that refers to the label.
     // TODO : Could move this to resolve_goto_labels in the parser.
-    for (Node *label_nd = fn->labels; label_nd; label_nd = label_nd->goto_next) {
+    for (Node *label_nd = fn->labels; label_nd;
+         label_nd = label_nd->goto_next) {
       if (label_nd->goto_label == NULL) {
         label_nd->goto_label = new_label(LABEL_CODE);
       }
@@ -1297,38 +1537,38 @@ void codegen(Prog *progs, ByteArray *out) {
   emit_bytes("\x7f\x45\x4c\x46\x02\x01\x01\x00", 8);
   // e_ident continued (os abi version 0, 7 bytes padding)
   emit_bytes("\x00\x00\x00\x00\x00\x00\x00\x00", 8);
-  emit_i16(3); // e_type: ET_DYN
-  emit_i16(0x3e); // e_machine: AMD64=0x3e ARM64=0xb7
-  emit_i32(1); // e_version: 1
-  emit_i64(0); // e_entry: entry point
-  emit_i64(EHSIZE); // e_phoff: program header offset
-  emit_i64(0); // e_shoff: section header offset
-  emit_i32(0); // e_flags: 0
-  emit_i16(EHSIZE); // e_ehsize: ELF header size
+  emit_i16(3);         // e_type: ET_DYN
+  emit_i16(0x3e);      // e_machine: AMD64=0x3e ARM64=0xb7
+  emit_i32(1);         // e_version: 1
+  emit_i64(0);         // e_entry: entry point
+  emit_i64(EHSIZE);    // e_phoff: program header offset
+  emit_i64(0);         // e_shoff: section header offset
+  emit_i32(0);         // e_flags: 0
+  emit_i16(EHSIZE);    // e_ehsize: ELF header size
   emit_i16(PHENTSIZE); // e_phentsize: program header size
-  emit_i16(2); // e_phnum: number of program headers
+  emit_i16(2);         // e_phnum: number of program headers
   emit_i16(SHENTSIZE); // e_shentsize: section header size
-  emit_i16(0); // e_shnum: number of section headers
-  emit_i16(0); // e_shstrndx: string table index
+  emit_i16(0);         // e_shnum: number of section headers
+  emit_i16(0);         // e_shstrndx: string table index
 
   // Emit text program header.
-  emit_i32(1); // p_type: PT_LOAD
-  emit_i32(5); // p_flags: R+X
-  emit_i64(0); // p_offset: offset in file
-  emit_i64(0); // p_vaddr: virtual address
-  emit_i64(0); // p_paddr: physical address
-  emit_i64(0); // p_filesz: size in file
-  emit_i64(0); // p_memsz: size in memory
+  emit_i32(1);         // p_type: PT_LOAD
+  emit_i32(5);         // p_flags: R+X
+  emit_i64(0);         // p_offset: offset in file
+  emit_i64(0);         // p_vaddr: virtual address
+  emit_i64(0);         // p_paddr: physical address
+  emit_i64(0);         // p_filesz: size in file
+  emit_i64(0);         // p_memsz: size in memory
   emit_i64(SEG_ALIGN); // p_align: alignment
 
   // Emit data program header.
-  emit_i32(1); // p_type: PT_LOAD
-  emit_i32(6); // p_flags: R+W
-  emit_i64(0); // p_offset: offset in file
-  emit_i64(0); // p_vaddr: virtual address
-  emit_i64(0); // p_paddr: physical address
-  emit_i64(0); // p_filesz: size in file
-  emit_i64(0); // p_memsz: size in memory
+  emit_i32(1);         // p_type: PT_LOAD
+  emit_i32(6);         // p_flags: R+W
+  emit_i64(0);         // p_offset: offset in file
+  emit_i64(0);         // p_vaddr: virtual address
+  emit_i64(0);         // p_paddr: physical address
+  emit_i64(0);         // p_filesz: size in file
+  emit_i64(0);         // p_memsz: size in memory
   emit_i64(SEG_ALIGN); // p_align: alignment
 
   resolve_names(progs);
@@ -1366,10 +1606,10 @@ void codegen(Prog *progs, ByteArray *out) {
 
   // Fix up code-to-code and code-to-data references.
   for (Label *label = labels; label; label = label->next) {
-      for (LabelRef *ref = label->refs; ref; ref = ref->next) {
-          int32_t disp = label->vaddr - ref->vaddr;
-          patch_i32(ref->offset - 4, disp);
-      }
+    for (LabelRef *ref = label->refs; ref; ref = ref->next) {
+      int32_t disp = label->vaddr - ref->vaddr;
+      patch_i32(ref->offset - 4, disp);
+    }
   }
 
   // Find entry point (_start).
@@ -1379,14 +1619,14 @@ void codegen(Prog *progs, ByteArray *out) {
   }
 
   // Fix up ELF file and program headers.
-  patch_i64(24, start_func->label->vaddr); // e_entry
-  patch_i64(EHSIZE + 32, text_filesz); // text p_filesz
-  patch_i64(EHSIZE + 40, text_filesz); // text p_memsz
-  patch_i64(EHSIZE + PHENTSIZE + 8, text_filesz); // data p_offset
+  patch_i64(24, start_func->label->vaddr);         // e_entry
+  patch_i64(EHSIZE + 32, text_filesz);             // text p_filesz
+  patch_i64(EHSIZE + 40, text_filesz);             // text p_memsz
+  patch_i64(EHSIZE + PHENTSIZE + 8, text_filesz);  // data p_offset
   patch_i64(EHSIZE + PHENTSIZE + 16, text_filesz); // data p_vaddr
   patch_i64(EHSIZE + PHENTSIZE + 24, text_filesz); // data p_paddr
   patch_i64(EHSIZE + PHENTSIZE + 32, data_filesz); // data p_filesz
-  patch_i64(EHSIZE + PHENTSIZE + 40, data_memsz); // data p_memsz
+  patch_i64(EHSIZE + PHENTSIZE + 40, data_memsz);  // data p_memsz
 
   current_out = NULL;
 }

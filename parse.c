@@ -114,10 +114,7 @@ static bool is_cont_valid;
 static Node *current_switch;
 
 static Obj *builtin_alloca;
-static Obj *builtin_memory_fill;
-static Obj *builtin_memory_copy;
-static Obj *builtin_memory_size;
-static Obj *builtin_memory_grow;
+static Obj *builtin_syscall3;
 
 static int anon_gvar_id_next = 0;
 static int anon_string_literal_id_next = 0;
@@ -1944,7 +1941,7 @@ static int64_t eval2(Node *node, Obj **gvar) {
     int64_t lhs = eval(node->lhs);
     int64_t rhs = eval(node->rhs);
     if (rhs == 0) {
-      printf("lhs=%lld rhs=%lld node->rhs->kind=%d ty=%d\n", lhs, rhs,
+      printf("lhs=%ld rhs=%ld node->rhs->kind=%d ty=%d\n", lhs, rhs,
              node->rhs->kind, node->rhs->ty->kind);
       error_tok(node->tok, "integer division by zero in constant expression");
     }
@@ -3056,12 +3053,6 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
     node->ret_buffer = new_lvar("", node->ty);
   }
 
-  // If a function is variadic, the caller stores variadic args in
-  // a stack buffer, and passes a pointer to it as a hidden arg.
-  if (ty->is_variadic) {
-    node->va_arg_area = new_lvar("", pointer_to(ty_void));
-  }
-
   return node;
 }
 
@@ -3221,6 +3212,13 @@ static Node *primary(Token **rest, Token *tok) {
     return node;
   }
 
+  if (equal(tok, "__builtin_breakpoint")) {
+    Node *node = new_node(ND_BKPT, tok);
+    tok = skip(tok->next, "(");
+    *rest = skip(tok, ")");
+    return node;
+  }
+
   if (tok->kind == TK_IDENT) {
     // Variable or enum constant
     VarScope *sc = find_var(tok);
@@ -3285,6 +3283,11 @@ static Token *parse_typedef(Token *tok, Type *basety) {
   return tok;
 }
 
+// Create local vars for each param type.
+// This iterates over the param linked list in reverse, using recursion,
+// as new_lvar() adds to the start of the `locals` linked list.
+// In the end, the locals linked list will be in the same order as the
+// params.
 static void create_param_lvars(Type *param) {
   if (param) {
     create_param_lvars(param->next);
@@ -3374,6 +3377,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   funcalls = NULL;
   locals = NULL;
   enter_scope();
+
+  // Create a local var for each param, and add to 'locals'.
   create_param_lvars(ty->params);
 
   // A buffer for a struct/union return value is passed
@@ -3487,29 +3492,16 @@ static void declare_builtin_functions(void) {
   alloca_ty->params = copy_type(ty_int);
   builtin_alloca = new_gvar("alloca", alloca_ty);
   builtin_alloca->is_definition = false;
+  builtin_alloca->is_builtin = true;
 
-  Type *memory_fill_ty = func_type(ty_void);
-  memory_fill_ty->params = pointer_to(ty_void);
-  memory_fill_ty->params->next = copy_type(ty_int);
-  memory_fill_ty->params->next->next = copy_type(ty_ulong);
-  builtin_memory_fill = new_gvar("__builtin_memory_fill", memory_fill_ty);
-  builtin_memory_fill->is_definition = false;
-
-  Type *memory_copy_ty = func_type(ty_void);
-  memory_copy_ty->params = pointer_to(ty_void);
-  memory_copy_ty->params->next = pointer_to(ty_void);
-  memory_copy_ty->params->next->next = copy_type(ty_ulong);
-  builtin_memory_copy = new_gvar("__builtin_memory_copy", memory_copy_ty);
-  builtin_memory_copy->is_definition = false;
-
-  Type *memory_size_ty = func_type(ty_ulong);
-  builtin_memory_size = new_gvar("__builtin_memory_size", memory_size_ty);
-  builtin_memory_size->is_definition = false;
-
-  Type *memory_grow_ty = func_type(ty_ulong);
-  memory_grow_ty->params = copy_type(ty_ulong);
-  builtin_memory_grow = new_gvar("__builtin_memory_grow", memory_grow_ty);
-  builtin_memory_grow->is_definition = false;
+  Type *syscall3_ty = func_type(ty_long);
+  syscall3_ty->params = copy_type(ty_long);
+  syscall3_ty->params->next = copy_type(ty_long);
+  syscall3_ty->params->next->next = copy_type(ty_long);
+  syscall3_ty->params->next->next->next = copy_type(ty_long);
+  builtin_syscall3 = new_gvar("__builtin_syscall3", syscall3_ty);
+  builtin_syscall3->is_definition = false;
+  builtin_syscall3->is_builtin = true;
 }
 
 // program = (typedef | function-definition | global-variable)*

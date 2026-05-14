@@ -192,6 +192,8 @@ void add_type(Node *node) {
   for (Node *n = node->args; n; n = n->next)
     add_type(n);
 
+  // warn_tok(node->tok, "add_type, kind=%x", node->kind);
+
   switch (node->kind) {
   case ND_NUM:
     node->ty = ty_int;

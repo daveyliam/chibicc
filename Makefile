@@ -1,16 +1,19 @@
 CFLAGS:=-std=c11 -g -O1 -fno-omit-frame-pointer -fno-common -Wall -Werror -fPIC
 
-# CFLAGS += -fsanitize=address
+CFLAGS += -fsanitize=address
 
 SRCS:=$(wildcard *.c)
 OBJS:=$(patsubst %.c,build/%.o,$(SRCS))
 
 TEST_SRCS:=$(filter-out test/common.c, $(wildcard test/*.c))
-TESTS:=$(patsubst test/%.c,build/test/%.wasm,$(TEST_SRCS))
+TESTS:=$(patsubst test/%.c,build/test/%.exe,$(TEST_SRCS))
+
+EARLY_TEST_SRCS:=$(wildcard test_early/*.c)
+EARLY_TESTS:=$(patsubst test_early/%.c,build/test_early/%.exe,$(EARLY_TEST_SRCS))
 
 CC:=clang
 
-$(shell mkdir -p build/test)
+$(shell mkdir -p build/test build/test_early)
 
 # Stage 1
 
@@ -20,13 +23,28 @@ chibicc: $(OBJS)
 $(OBJS): build/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-build/test/%.wasm: test/%.c chibicc
-	./chibicc -Itest -o build/test/$*.wat $< test/common.c libc/libc.c
-	wat2wasm --debug-names --debug-parser build/test/$*.wat -o $@
-	wasm-validate $@
+build/test_early/%.exe: test_early/%.c chibicc
+	ASAN_OPTIONS="detect_leaks=0" \
+	./chibicc -o build/test_early/$*.exe $<
+
+test_early: $(EARLY_TESTS)
+	ASAN_OPTIONS="detect_leaks=0" \
+	./chibicc -o build/test_early/simple.exe test_early/simple.c
+	./build/test_early/simple.exe; \
+	if [[ $$? -eq 30 ]]; then \
+	  echo simple.c: ok; \
+	else \
+	  echo simple.c: fail; \
+	  exit 1; \
+	fi
+	./build/test_early/write.exe
+
+build/test/%.exe: test/%.c chibicc
+	ASAN_OPTIONS="detect_leaks=0" \
+	./chibicc -Itest -o build/test/$*.exe $< test/common.c libc/libc.c
 
 test: $(TESTS)
-	for i in $^; do echo $$i; wasmtime ./$$i || exit 1; echo; done
+	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
 	test/driver.sh ./chibicc
 
 # test-all: test test-stage2

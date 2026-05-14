@@ -193,7 +193,7 @@ static Obj *cc1(void) {
   return parse(tok);
 }
 
-static FILE *open_file(char *path) {
+static FILE *open_file(const char *path) {
   if (!path || strcmp(path, "-") == 0)
     return stdout;
 
@@ -240,9 +240,11 @@ int main(int argc, char **argv) {
   codegen(progs_head.next, &buf);
 
   // Write codegen output to output file.
-  FILE *out = open_file(opt_o ? opt_o : "a.out");
+  const char *out_path = opt_o ? opt_o : "a.out";
+  FILE *out = open_file(out_path);
   fwrite(buf.data, buf.len, 1, out);
   fclose(out);
+  chmod(out_path, 0755);
 
   bytearray_free(&buf);
 
