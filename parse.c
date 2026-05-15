@@ -348,6 +348,7 @@ static Obj *new_string_literal(char *p, Type *ty) {
   char *name = format(".str.%d", anon_string_literal_id_next++);
   Obj *var = new_gvar(name, ty);
   var->init_data = p;
+  var->init_data_size = ty->size;
   return var;
 }
 
@@ -1624,9 +1625,11 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
   Initializer *init = initializer(rest, tok, var->ty, &var->ty);
 
   Relocation head = {};
-  char *buf = calloc(1, get_init_size(init));
+  int init_data_size = get_init_size(init);
+  char *buf = calloc(1, init_data_size);
   write_gvar_data(&head, init, var->ty, buf, 0);
   var->init_data = buf;
+  var->init_data_size = init_data_size;
   var->rel = head.next;
 }
 

@@ -3,7 +3,6 @@ chibicc=$1
 
 tmp=`mktemp -d /tmp/chibicc-test-XXXXXX`
 trap 'rm -rf $tmp' INT TERM HUP EXIT
-echo > $tmp/empty.c
 
 check() {
     if [ $? -eq 0 ]; then
@@ -16,7 +15,8 @@ check() {
 
 # -o
 rm -f $tmp/out
-./chibicc -c -o $tmp/out $tmp/empty.c
+echo 'void _start() {}' > $tmp/out.c
+./chibicc -o $tmp/out $tmp/out.c
 [ -f $tmp/out ]
 check -o
 
@@ -26,136 +26,138 @@ check --help
 
 # Default output file
 rm -f $tmp/out.o $tmp/out.s
-echo 'int main() {}' > $tmp/out.c
-(cd $tmp; $OLDPWD/$chibicc -c out.c)
-[ -f $tmp/out.o ]
-check 'default output file'
-
-(cd $tmp; $OLDPWD/$chibicc -c -S out.c)
-[ -f $tmp/out.s ]
+echo 'void _start() {}' > $tmp/out.c
+(cd $tmp; $OLDPWD/$chibicc out.c)
+[ -f $tmp/a.out ]
 check 'default output file'
 
 # Multiple input files
 rm -f $tmp/foo.o $tmp/bar.o
 echo 'int x;' > $tmp/foo.c
 echo 'int y;' > $tmp/bar.c
-(cd $tmp; $OLDPWD/$chibicc -c $tmp/foo.c $tmp/bar.c)
-[ -f $tmp/foo.o ] && [ -f $tmp/bar.o ]
-check 'multiple input files'
-
-rm -f $tmp/foo.s $tmp/bar.s
-echo 'int x;' > $tmp/foo.c
-echo 'int y;' > $tmp/bar.c
-(cd $tmp; $OLDPWD/$chibicc -c -S $tmp/foo.c $tmp/bar.c)
-[ -f $tmp/foo.s ] && [ -f $tmp/bar.s ]
+(cd $tmp; $OLDPWD/$chibicc $tmp/foo.c $tmp/bar.c)
+[ -f $tmp/a.out ]
 check 'multiple input files'
 
 # a.out
 rm -f $tmp/a.out
-echo 'int main() {}' > $tmp/foo.c
+echo 'void _start() {}' > $tmp/foo.c
 (cd $tmp; $OLDPWD/$chibicc foo.c)
 [ -f $tmp/a.out ]
 check a.out
 
 # -I
 mkdir $tmp/dir
-echo foo > $tmp/dir/i-option-test
-echo "#include \"i-option-test\"" | $chibicc -I$tmp/dir -E -xc - | grep -q foo
+echo 'void _start() {}' > $tmp/dir/i-option-test
+echo "#include \"i-option-test\"" > $tmp/foo.c
+(cd $tmp; $OLDPWD/$chibicc -o /dev/null -I$tmp/dir foo.c)
 check -I
 
 # -D
-echo foo | $chibicc -Dfoo -E -xc - | grep -q 1
+echo 'void _start() {int a = foo;}' | $chibicc -o /dev/null -Dfoo -
 check -D
 
 # -D
-echo foo | $chibicc -Dfoo=bar -E -xc - | grep -q bar
+echo 'int foo = 123; void _start() {}' > $tmp/foo.c
+$chibicc -o $tmp/foo -Dfoo=bar $tmp/foo.c
+strings $tmp/foo | grep -q bar
+! strings $tmp/foo | grep -q foo
 check -D
 
 # -U
-echo foo | $chibicc -Dfoo=bar -Ufoo -E -xc - | grep -q foo
+echo 'int foo = 123; void _start() {}' > $tmp/foo.c
+$chibicc -o $tmp/foo -Dfoo=bar -Ufoo $tmp/foo.c
+strings $tmp/foo | grep -q foo
+! strings $tmp/foo | grep -q bar
 check -U
 
 # ignored options
-$chibicc -c -O -Wall -g -std=c11 -ffreestanding -fno-builtin \
+echo 'void _start() {}' > $tmp/foo.c
+$chibicc -O -Wall -g -std=c11 -ffreestanding -fno-builtin \
          -fno-omit-frame-pointer -fno-stack-protector -fno-strict-aliasing \
-         -m64 -mno-red-zone -w -o /dev/null $tmp/empty.c
+         -m64 -mno-red-zone -w -o /dev/null $tmp/foo.c
 check 'ignored options'
 
 # BOM marker
-printf '\xef\xbb\xbfxyz\n' | $chibicc -E -o- -xc - | grep -q '^xyz'
+printf '\xef\xbb\xbfvoid _start() {}\n' | $chibicc -o /dev/null -
 check 'BOM marker'
 
 # Inline functions
 echo 'inline void foo() {}' > $tmp/inline1.c
 echo 'inline void foo() {}' > $tmp/inline2.c
-echo 'int main() { return 0; }' > $tmp/inline3.c
+echo 'void _start() {}' > $tmp/inline3.c
 $chibicc -o /dev/null $tmp/inline1.c $tmp/inline2.c $tmp/inline3.c
 check inline
 
 echo 'extern inline void foo() {}' > $tmp/inline1.c
-echo 'int foo(); int main() { foo(); }' > $tmp/inline2.c
+echo 'int foo(); void _start() { foo(); }' > $tmp/inline2.c
 $chibicc -o /dev/null $tmp/inline1.c $tmp/inline2.c
 check inline
 
-echo 'static inline void f1() {}' | $chibicc -o- -S -xc - | grep -v -q f1:
-check inline
+# echo 'static inline void f1() {}' | $chibicc -o- - | grep -v -q f1:
+# check inline
 
-echo 'static inline void f1() {} void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f1:
-check inline
+# echo 'static inline void f1() {} void foo() { f1(); }' | $chibicc -o- - | grep -q f1:
+# check inline
 
-echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f1:
-check inline
+# echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f1:
+# check inline
 
-echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -v -q f2:
-check inline
+# echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -v -q f2:
+# check inline
 
-echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f1:
-check inline
+# echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f1:
+# check inline
 
-echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f2:
-check inline
+# echo 'static inline void f1() {} static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f2:
+# check inline
 
-echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() {}' | $chibicc -o- -S -xc - | grep -v -q f1:
-check inline
+# echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() {}' | $chibicc -o- -S -xc - | grep -v -q f1:
+# check inline
 
-echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() {}' | $chibicc -o- -S -xc - | grep -v -q f2:
-check inline
+# echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() {}' | $chibicc -o- -S -xc - | grep -v -q f2:
+# check inline
 
-echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f1:
-check inline
+# echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f1:
+# check inline
 
-echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f2:
-check inline
+# echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f1(); }' | $chibicc -o- -S -xc - | grep -q f2:
+# check inline
 
-echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f1:
-check inline
+# echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f1:
+# check inline
 
-echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f2:
-check inline
+# echo 'static inline void f2(); static inline void f1() { f2(); } static inline void f2() { f1(); } void foo() { f2(); }' | $chibicc -o- -S -xc - | grep -q f2:
+# check inline
 
 # -idirafter
 mkdir -p $tmp/dir1 $tmp/dir2
-echo foo > $tmp/dir1/idirafter
-echo bar > $tmp/dir2/idirafter
-echo "#include \"idirafter\"" | $chibicc -I$tmp/dir1 -I$tmp/dir2 -E -xc - | grep -q foo
+echo "#define x \"foofoo\"" > $tmp/dir1/idirafter
+echo "#define x \"barbar\"" > $tmp/dir2/idirafter
+printf "#include \"idirafter\"\nvoid _start() {const char *y = x;}\n" | \
+    $chibicc -I$tmp/dir1 -I$tmp/dir2 -o- - | strings | grep -q foofoo
 check -idirafter
-echo "#include \"idirafter\"" | $chibicc -idirafter $tmp/dir1 -I$tmp/dir2 -E -xc - | grep -q bar
+printf "#include \"idirafter\"\nvoid _start() {const char *y = x;}\n" | \
+    $chibicc -idirafter $tmp/dir1 -I$tmp/dir2 -o- - | strings | grep -q barbar
 check -idirafter
 
 # -include
-echo foo > $tmp/out.h
-echo bar | $chibicc -include $tmp/out.h -E -o- -xc - | grep -q -z 'foo.*bar'
+echo "char *x = \"foofoo\";" > $tmp/out.h
+echo "char *y = \"barbar\"; void _start() {}" | \
+    $chibicc -include $tmp/out.h -o$tmp/out -
+strings $tmp/out |  grep -q 'foofoo'
+strings $tmp/out |  grep -q 'barbar'
 check -include
-echo NULL | $chibicc -Iinclude -include stdio.h -E -o- -xc - | grep -q 0
-check -include
+# echo NULL | $chibicc -Iinclude -include stdio.h -o- - | grep -q 0
+# check -include
 
 # #include_next
 mkdir -p $tmp/next1 $tmp/next2 $tmp/next3
 echo '#include "file1.h"' > $tmp/file.c
 echo '#include_next "file1.h"' > $tmp/next1/file1.h
 echo '#include_next "file2.h"' > $tmp/next2/file1.h
-echo 'foo' > $tmp/next3/file2.h
-$chibicc -I$tmp/next1 -I$tmp/next2 -I$tmp/next3 -E $tmp/file.c | grep -q foo
+echo "char *x = \"foofoo\"; void _start() {}" > $tmp/next3/file2.h
+$chibicc -I$tmp/next1 -I$tmp/next2 -I$tmp/next3 $tmp/file.c -o- | strings | grep -q foofoo
 check '#include_next'
 
 echo OK

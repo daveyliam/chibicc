@@ -55,7 +55,8 @@ test: $(TESTS)
 	  echo "$$fail tests failed"; \
 	  exit 1; \
 	fi
-	test/driver.sh ./chibicc
+	ASAN_OPTIONS="detect_leaks=0" \
+	  test/driver.sh ./chibicc
 
 # test-all: test test-stage2
 

@@ -1419,7 +1419,7 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz, int *data_mems
       }
       offset = align_to(offset, var->align);
       var->offset = offset;
-      offset += var->ty->size;
+      offset += var->init_data_size;
     }
   }
 
@@ -1547,7 +1547,7 @@ static void emit_data(Prog *progs) {
       }
       int var_offset = align_to(current_offset, var->align);
       emit_zeroes(var_offset - current_offset);
-      emit_bytes(var->init_data, var->ty->size);
+      emit_bytes(var->init_data, var->init_data_size);
     }
   }
 }

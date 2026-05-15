@@ -163,6 +163,7 @@ struct Obj {
   bool is_tentative;
   bool is_tls;
   char *init_data;
+  int init_data_size;
   Relocation *rel;
 
   // Global or local variable.
