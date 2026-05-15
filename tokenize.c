@@ -720,7 +720,7 @@ static char *read_file(char *path) {
     if (n == 0) {
       break;
     }
-    bytearray_extend(&arr, (uint8_t*)buf2, n);
+    bytearray_extend(&arr, (uint8_t *)buf2, n);
   }
 
   if (fp != stdin) {
@@ -732,7 +732,7 @@ static char *read_file(char *path) {
     bytearray_append(&arr, '\n');
   }
   bytearray_append(&arr, '\0');
-  return (char*)arr.data;
+  return (char *)arr.data;
 }
 
 File *new_file(char *name, int file_no, char *contents) {
