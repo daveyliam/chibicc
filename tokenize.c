@@ -195,10 +195,10 @@ static bool is_keyword(Token *tok) {
   return hashmap_get2(&map, tok->loc, tok->len);
 }
 
-static int read_escaped_char(char **new_pos, char *p) {
+static uint32_t read_escaped_char(char **new_pos, char *p) {
   if ('0' <= *p && *p <= '7') {
     // Read an octal number.
-    int c = *p++ - '0';
+    uint32_t c = *p++ - '0';
     if ('0' <= *p && *p <= '7') {
       c = (c << 3) + (*p++ - '0');
       if ('0' <= *p && *p <= '7')
@@ -214,7 +214,7 @@ static int read_escaped_char(char **new_pos, char *p) {
     if (!isxdigit(*p))
       error_at(p, "invalid hex escape sequence");
 
-    int c = 0;
+    uint32_t c = 0;
     for (; isxdigit(*p); p++)
       c = (c << 4) + from_hex(*p);
     *new_pos = p;
@@ -223,9 +223,9 @@ static int read_escaped_char(char **new_pos, char *p) {
 
   *new_pos = p + 1;
 
-  // Escape sequences are defined using themselves here. E.g.
-  // '\n' is implemented using '\n'. This tautological definition
-  // works because the compiler that compiles our compiler knows
+  // Escape sequences could be defined using themselves here. E.g.
+  // implement '\n' using '\n'. This tautological definition would
+  // work because the compiler that compiles our compiler knows
   // what '\n' actually is. In other words, we "inherit" the ASCII
   // code of '\n' from the compiler that compiles our compiler,
   // so we don't have to teach the actual code here.
@@ -234,21 +234,24 @@ static int read_escaped_char(char **new_pos, char *p) {
   // of the compiler but also for the security of the generated code.
   // For more info, read "Reflections on Trusting Trust" by Ken Thompson.
   // https://github.com/rui314/chibicc/wiki/thompson1984.pdf
+  //
+  // Given all that, just use the int codes here.
+  // The above note does apply elsewhere though.
   switch (*p) {
   case 'a':
-    return '\a';
+    return 7;
   case 'b':
-    return '\b';
+    return 8;
   case 't':
-    return '\t';
+    return 9;
   case 'n':
-    return '\n';
+    return 10;
   case 'v':
-    return '\v';
+    return 11;
   case 'f':
-    return '\f';
+    return 12;
   case 'r':
-    return '\r';
+    return 13;
   // [GNU] \e for the ASCII escape character is a GNU C extension.
   case 'e':
     return 27;
@@ -350,7 +353,7 @@ static Token *read_char_literal(char *start, char *quote, Type *ty) {
   if (*p == '\0')
     error_at(start, "unclosed char literal");
 
-  int c;
+  uint32_t c;
   if (*p == '\\')
     c = read_escaped_char(&p, p + 1);
   else
@@ -361,7 +364,12 @@ static Token *read_char_literal(char *start, char *quote, Type *ty) {
     error_at(p, "unclosed char literal");
 
   Token *tok = new_token(TK_NUM, start, end + 1);
-  tok->val = c;
+  // TODO : also truncate the val to match the type?
+  if (ty->is_unsigned) {
+    tok->val = (int64_t)c;
+  } else {
+    tok->val = (int64_t)(int32_t)c;
+  }
   tok->ty = ty;
   return tok;
 }

@@ -149,7 +149,7 @@ static Node *logor(Token **rest, Token *tok);
 static double eval_double(Node *node);
 static Node *conditional(Token **rest, Token *tok);
 static Node *logand(Token **rest, Token *tok);
-static Node * bitor (Token * *rest, Token *tok);
+static Node *bitor(Token **rest, Token *tok);
 static Node *bitxor(Token **rest, Token *tok);
 static Node *bitand(Token **rest, Token *tok);
 static Node *equality(Token **rest, Token *tok);
@@ -1145,12 +1145,6 @@ static int count_array_init_elements(Token *tok, Type *ty) {
 static void array_initializer1(Token **rest, Token *tok, Initializer *init) {
   tok = skip(tok, "{");
 
-  // Duplicated code?
-  // if (init->is_flexible) {
-  //   int len = count_array_init_elements(tok, init->ty);
-  //   *init = *new_initializer(array_of(init->ty->base, len), false);
-  // }
-
   if (init->is_flexible) {
     int len = count_array_init_elements(tok, init->ty);
     *init = *new_initializer(array_of(init->ty->base, len), false);
@@ -1502,8 +1496,9 @@ static Relocation *write_gvar_data(Relocation *cur, Initializer *init, Type *ty,
 
   if (ty->kind == TY_STRUCT) {
     for (Member *mem = ty->members; mem; mem = mem->next) {
+      Initializer *init_mem = init->children[mem->idx];
       if (mem->is_bitfield) {
-        Node *expr = init->children[mem->idx]->expr;
+        Node *expr = init_mem->expr;
         if (!expr)
           break;
 
@@ -1514,11 +1509,15 @@ static Relocation *write_gvar_data(Relocation *cur, Initializer *init, Type *ty,
         uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
         write_buf(loc, combined, mem->ty->size);
       } else if (ty->is_flexible && mem->next == NULL) {
-        cur = write_gvar_data(cur, init->children[mem->idx], init->children[mem->idx]->ty, buf,
+        // Note that for structs only the last member can be a
+        // flexible array. It is also an error to try to initialize a struct
+        // with a nested flexible struct. It is also an error to initialize the
+        // flexible array member of a local var.
+        cur = write_gvar_data(cur, init_mem, init_mem->ty, buf,
                               offset + mem->offset);
       } else {
-        cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
-                              offset + mem->offset);
+        cur =
+            write_gvar_data(cur, init_mem, mem->ty, buf, offset + mem->offset);
       }
     }
     return cur;
@@ -2342,17 +2341,17 @@ static Node *logor(Token **rest, Token *tok) {
 
 // logand = bitor ("&&" bitor)*
 static Node *logand(Token **rest, Token *tok) {
-  Node *node = bitor (&tok, tok);
+  Node *node = bitor(&tok, tok);
   while (equal(tok, "&&")) {
     Token *start = tok;
-    node = new_binary(ND_LOGAND, node, bitor (&tok, tok->next), start);
+    node = new_binary(ND_LOGAND, node, bitor(&tok, tok->next), start);
   }
   *rest = tok;
   return node;
 }
 
 // bitor = bitxor ("|" bitxor)*
-static Node * bitor (Token * *rest, Token *tok) {
+static Node *bitor(Token **rest, Token *tok) {
   Node *node = bitxor(&tok, tok);
   while (equal(tok, "|")) {
     Token *start = tok;

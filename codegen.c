@@ -786,18 +786,6 @@ static void gen_expr(Node *node) {
     }
     return;
   }
-  case ND_NEG: {
-    switch (node->ty->kind) {
-    case TY_FLOAT:
-    case TY_DOUBLE:
-      error_tok(node->tok, "float negation unsupported");
-      return;
-    default:
-      gen_expr(node->lhs);
-      emit_neg();
-    }
-    return;
-  }
   case ND_VAR:
     gen_addr(node);
     load(node->ty);
@@ -865,6 +853,20 @@ static void gen_expr(Node *node) {
     label_set_dest(end_label);
     return;
   }
+  case ND_NEG: {
+    switch (node->ty->kind) {
+    case TY_FLOAT:
+    case TY_DOUBLE:
+      error_tok(node->tok, "float negation unsupported");
+      return;
+    default:
+      gen_expr(node->lhs);
+      emit_neg();
+      // Need to fix upper bits if int is less than 64-bits.
+      gen_integer_cast(node->lhs->ty);
+    }
+    return;
+  }
   case ND_NOT:
     gen_expr(node->lhs);
     gen_is_eq_zero(node->lhs->ty);
@@ -872,6 +874,8 @@ static void gen_expr(Node *node) {
   case ND_BITNOT:
     gen_expr(node->lhs);
     emit_not();
+      // Need to fix upper bits if int is less than 64-bits.
+    gen_integer_cast(node->lhs->ty);
     return;
   case ND_LOGAND: {
     // Logical AND with short-circuit. Skip the RHS expression if the LHS is
@@ -1060,7 +1064,7 @@ static void gen_expr(Node *node) {
     break;
   }
 
-  // integer binary ops.
+  // Integer binary ops.
 
   gen_expr(node->lhs);
   emit_push_r0();
@@ -1068,9 +1072,17 @@ static void gen_expr(Node *node) {
   emit_mov_r1_r0();
   emit_pop_r0();
 
+  // Note that most arithmetic instructions emitted operate on 64-bit values,
+  // so need to truncate result with gen_integer_cast if the result is less
+  // than 64-bits.
+  // For operations that don't modify higher bits of the result (e.g. AND, OR,
+  // assuming the inputs have no higher bits set to begin with), we can skip
+  // the truncate.
+
   switch (node->kind) {
   case ND_ADD:
     emit_add();
+    gen_integer_cast(node->ty);
     return;
   case ND_SUB:
     emit_sub();
@@ -1084,6 +1096,7 @@ static void gen_expr(Node *node) {
     } else {
       emit_div_s();
     }
+    gen_integer_cast(node->ty);
     return;
   case ND_MOD:
     if (node->ty->is_unsigned) {
@@ -1091,6 +1104,7 @@ static void gen_expr(Node *node) {
     } else {
       emit_rem_s();
     }
+    gen_integer_cast(node->ty);
     return;
   case ND_BITAND:
     emit_and();
@@ -1100,6 +1114,7 @@ static void gen_expr(Node *node) {
     return;
   case ND_BITXOR:
     emit_xor();
+    gen_integer_cast(node->ty);
     return;
   case ND_EQ:
     emit_eq();
@@ -1123,6 +1138,7 @@ static void gen_expr(Node *node) {
     return;
   case ND_SHL:
     emit_shl();
+    gen_integer_cast(node->ty);
     return;
   case ND_SHR:
     if (node->lhs->ty->is_unsigned) {
