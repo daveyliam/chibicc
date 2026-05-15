@@ -79,7 +79,12 @@ test: $(TESTS)
 
 # Misc.
 
+format:
+	for f in $(SRCS); do \
+	  clang-format -i "$$f"; \
+	done
+
 clean:
 	rm -rf chibicc tmp* build
 
-.PHONY: test clean test-stage2
+.PHONY: test clean test-stage2 format

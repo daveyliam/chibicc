@@ -24,16 +24,17 @@ void error(char *fmt, ...) {
 //
 // foo.c:10: x = y + 1;
 //               ^ <error message here>
-static void verror_at(char *filename, char *input, int line_no, char *loc,
-                      char *fmt, va_list ap) {
+static void verror_at(char *filename, char *input, int line_no, char *loc, char *fmt, va_list ap) {
   // Find a line containing `loc`.
   char *line = loc;
-  while (input < line && line[-1] != '\n')
+  while (input < line && line[-1] != '\n') {
     line--;
+  }
 
   char *end = loc;
-  while (*end && *end != '\n')
+  while (*end && *end != '\n') {
     end++;
+  }
 
   // Print out the line.
   int indent = fprintf(stderr, "%s:%d: ", filename, line_no);
@@ -50,9 +51,11 @@ static void verror_at(char *filename, char *input, int line_no, char *loc,
 
 void error_at(char *loc, char *fmt, ...) {
   int line_no = 1;
-  for (char *p = current_file->contents; p < loc; p++)
-    if (*p == '\n')
+  for (char *p = current_file->contents; p < loc; p++) {
+    if (*p == '\n') {
       line_no++;
+    }
+  }
 
   va_list ap;
   va_start(ap, fmt);
@@ -68,8 +71,7 @@ void error_tok(Token *tok, char *fmt, ...) {
     fprintf(stderr, "\n");
     exit(1);
   }
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt,
-            ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
   exit(1);
 }
 
@@ -81,8 +83,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
     fprintf(stderr, "\n");
     exit(1);
   }
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt,
-            ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
   va_end(ap);
 }
 
@@ -123,32 +124,34 @@ static Token *new_token(TokenKind kind, char *start, char *end) {
   return tok;
 }
 
-static bool startswith(char *p, char *q) {
-  return strncmp(p, q, strlen(q)) == 0;
-}
+static bool startswith(char *p, char *q) { return strncmp(p, q, strlen(q)) == 0; }
 
 // Read an identifier and returns the length of it.
 // If p does not point to a valid identifier, 0 is returned.
 static int read_ident(char *start) {
   char *p = start;
   uint32_t c = decode_utf8(&p, p);
-  if (!is_ident1(c))
+  if (!is_ident1(c)) {
     return 0;
+  }
 
   for (;;) {
     char *q;
     c = decode_utf8(&q, p);
-    if (!is_ident2(c))
+    if (!is_ident2(c)) {
       return p - start;
+    }
     p = q;
   }
 }
 
 static int from_hex(char c) {
-  if ('0' <= c && c <= '9')
+  if ('0' <= c && c <= '9') {
     return c - '0';
-  if ('a' <= c && c <= 'f')
+  }
+  if ('a' <= c && c <= 'f') {
     return c - 'a' + 10;
+  }
   return c - 'A' + 10;
 }
 
@@ -159,9 +162,11 @@ static int read_punct(char *p) {
       "++",  "--",  "%=",  "&=", "|=", "^=", "&&", "||", "<<", ">>", "##",
   };
 
-  for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
-    if (startswith(p, kw[i]))
+  for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
+    if (startswith(p, kw[i])) {
       return strlen(kw[i]);
+    }
+  }
 
   return ispunct(*p) ? 1 : 0;
 }
@@ -188,8 +193,9 @@ static bool is_keyword(Token *tok) {
         "__thread",  "_Atomic",    "__attribute__",
     };
 
-    for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
+    for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
       hashmap_put(&map, kw[i], (void *)1);
+    }
   }
 
   return hashmap_get2(&map, tok->loc, tok->len);
@@ -201,8 +207,9 @@ static uint32_t read_escaped_char(char **new_pos, char *p) {
     uint32_t c = *p++ - '0';
     if ('0' <= *p && *p <= '7') {
       c = (c << 3) + (*p++ - '0');
-      if ('0' <= *p && *p <= '7')
+      if ('0' <= *p && *p <= '7') {
         c = (c << 3) + (*p++ - '0');
+      }
     }
     *new_pos = p;
     return c;
@@ -211,12 +218,14 @@ static uint32_t read_escaped_char(char **new_pos, char *p) {
   if (*p == 'x') {
     // Read a hexadecimal number.
     p++;
-    if (!isxdigit(*p))
+    if (!isxdigit(*p)) {
       error_at(p, "invalid hex escape sequence");
+    }
 
     uint32_t c = 0;
-    for (; isxdigit(*p); p++)
+    for (; isxdigit(*p); p++) {
       c = (c << 4) + from_hex(*p);
+    }
     *new_pos = p;
     return c;
   }
@@ -264,10 +273,12 @@ static uint32_t read_escaped_char(char **new_pos, char *p) {
 static char *string_literal_end(char *p) {
   char *start = p;
   for (; *p != '"'; p++) {
-    if (*p == '\n' || *p == '\0')
+    if (*p == '\n' || *p == '\0') {
       error_at(start, "unclosed string literal");
-    if (*p == '\\')
+    }
+    if (*p == '\\') {
       p++;
+    }
   }
   return p;
 }
@@ -278,10 +289,11 @@ static Token *read_string_literal(char *start, char *quote) {
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
-    if (*p == '\\')
+    if (*p == '\\') {
       buf[len++] = read_escaped_char(&p, p + 1);
-    else
+    } else {
       buf[len++] = *p++;
+    }
   }
 
   Token *tok = new_token(TK_STR, start, end + 1);
@@ -336,10 +348,11 @@ static Token *read_utf32_string_literal(char *start, char *quote, Type *ty) {
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
-    if (*p == '\\')
+    if (*p == '\\') {
       buf[len++] = read_escaped_char(&p, p + 1);
-    else
+    } else {
       buf[len++] = decode_utf8(&p, p);
+    }
   }
 
   Token *tok = new_token(TK_STR, start, end + 1);
@@ -350,18 +363,21 @@ static Token *read_utf32_string_literal(char *start, char *quote, Type *ty) {
 
 static Token *read_char_literal(char *start, char *quote, Type *ty) {
   char *p = quote + 1;
-  if (*p == '\0')
+  if (*p == '\0') {
     error_at(start, "unclosed char literal");
+  }
 
   uint32_t c;
-  if (*p == '\\')
+  if (*p == '\\') {
     c = read_escaped_char(&p, p + 1);
-  else
+  } else {
     c = decode_utf8(&p, p);
+  }
 
   char *end = strchr(p, '\'');
-  if (!end)
+  if (!end) {
     error_at(p, "unclosed char literal");
+  }
 
   Token *tok = new_token(TK_NUM, start, end + 1);
   // TODO : also truncate the val to match the type?
@@ -414,35 +430,38 @@ static bool convert_pp_int(Token *tok) {
     u = true;
   }
 
-  if (p != tok->loc + tok->len)
+  if (p != tok->loc + tok->len) {
     return false;
+  }
 
   // Infer a type.
   Type *ty;
   if (base == 10) {
-    if (l && u)
+    if (l && u) {
       ty = ty_ulong;
-    else if (l)
+    } else if (l) {
       ty = ty_long;
-    else if (u)
+    } else if (u) {
       ty = (val >> 32) ? ty_ulong : ty_uint;
-    else
+    } else {
       ty = (val >> 31) ? ty_long : ty_int;
+    }
   } else {
-    if (l && u)
+    if (l && u) {
       ty = ty_ulong;
-    else if (l)
+    } else if (l) {
       ty = (val >> 63) ? ty_ulong : ty_long;
-    else if (u)
+    } else if (u) {
       ty = (val >> 32) ? ty_ulong : ty_uint;
-    else if (val >> 63)
+    } else if (val >> 63) {
       ty = ty_ulong;
-    else if (val >> 32)
+    } else if (val >> 32) {
       ty = ty_long;
-    else if (val >> 31)
+    } else if (val >> 31) {
       ty = ty_uint;
-    else
+    } else {
       ty = ty_int;
+    }
   }
 
   tok->kind = TK_NUM;
@@ -460,8 +479,9 @@ static bool convert_pp_int(Token *tok) {
 // This function converts a pp-number token to a regular number token.
 static void convert_pp_number(Token *tok) {
   // Try to parse as an integer constant.
-  if (convert_pp_int(tok))
+  if (convert_pp_int(tok)) {
     return;
+  }
 
   // If it's not an integer, it must be a floating point constant.
   char *end;
@@ -478,8 +498,9 @@ static void convert_pp_number(Token *tok) {
     ty = ty_double;
   }
 
-  if (tok->loc + tok->len != end)
+  if (tok->loc + tok->len != end) {
     error_tok(tok, "invalid numeric constant");
+  }
 
   tok->kind = TK_NUM;
   tok->fval = val;
@@ -488,10 +509,11 @@ static void convert_pp_number(Token *tok) {
 
 void convert_pp_tokens(Token *tok) {
   for (Token *t = tok; t->kind != TK_EOF; t = t->next) {
-    if (is_keyword(t))
+    if (is_keyword(t)) {
       t->kind = TK_KEYWORD;
-    else if (t->kind == TK_PP_NUM)
+    } else if (t->kind == TK_PP_NUM) {
       convert_pp_number(t);
+    }
   }
 }
 
@@ -505,17 +527,19 @@ static void add_line_numbers(Token *tok) {
       tok->line_no = n;
       tok = tok->next;
     }
-    if (*p == '\n')
+    if (*p == '\n') {
       n++;
+    }
   } while (*p++);
 }
 
 Token *tokenize_string_literal(Token *tok, Type *basety) {
   Token *t;
-  if (basety->size == 2)
+  if (basety->size == 2) {
     t = read_utf16_string_literal(tok->loc, tok->loc);
-  else
+  } else {
     t = read_utf32_string_literal(tok->loc, tok->loc, basety);
+  }
   t->next = tok->next;
   return t;
 }
@@ -535,8 +559,9 @@ Token *tokenize(File *file) {
     // Skip line comments.
     if (startswith(p, "//")) {
       p += 2;
-      while (*p != '\n')
+      while (*p != '\n') {
         p++;
+      }
       has_space = true;
       continue;
     }
@@ -544,8 +569,9 @@ Token *tokenize(File *file) {
     // Skip block comments.
     if (startswith(p, "/*")) {
       char *q = strstr(p + 2, "*/");
-      if (!q)
+      if (!q) {
         error_at(p, "unclosed block comment");
+      }
       p = q + 2;
       has_space = true;
       continue;
@@ -570,12 +596,13 @@ Token *tokenize(File *file) {
     if (isdigit(*p) || (*p == '.' && isdigit(p[1]))) {
       char *q = p++;
       for (;;) {
-        if (p[0] && p[1] && strchr("eEpP", p[0]) && strchr("+-", p[1]))
+        if (p[0] && p[1] && strchr("eEpP", p[0]) && strchr("+-", p[1])) {
           p += 2;
-        else if (isalnum(*p) || *p == '.')
+        } else if (isalnum(*p) || *p == '.') {
           p++;
-        else
+        } else {
           break;
+        }
       }
       cur = cur->next = new_token(TK_PP_NUM, q, p);
       continue;
@@ -679,8 +706,9 @@ static char *read_file(char *path) {
     fp = stdin;
   } else {
     fp = fopen(path, "r");
-    if (!fp)
+    if (!fp) {
       return NULL;
+    }
   }
 
   char *buf;
@@ -691,18 +719,21 @@ static char *read_file(char *path) {
   for (;;) {
     char buf2[4096];
     int n = fread(buf2, 1, sizeof(buf2), fp);
-    if (n == 0)
+    if (n == 0) {
       break;
+    }
     fwrite(buf2, 1, n, out);
   }
 
-  if (fp != stdin)
+  if (fp != stdin) {
     fclose(fp);
+  }
 
   // Make sure that the last line is properly terminated with '\n'.
   fflush(out);
-  if (buflen == 0 || buf[buflen - 1] != '\n')
+  if (buflen == 0 || buf[buflen - 1] != '\n') {
     fputc('\n', out);
+  }
   fputc('\0', out);
   fclose(out);
   return buf;
@@ -751,23 +782,26 @@ static void remove_backslash_newline(char *p) {
       n++;
     } else if (p[i] == '\n') {
       p[j++] = p[i++];
-      for (; n > 0; n--)
+      for (; n > 0; n--) {
         p[j++] = '\n';
+      }
     } else {
       p[j++] = p[i++];
     }
   }
 
-  for (; n > 0; n--)
+  for (; n > 0; n--) {
     p[j++] = '\n';
+  }
   p[j] = '\0';
 }
 
 static uint32_t read_universal_char(char *p, int len) {
   uint32_t c = 0;
   for (int i = 0; i < len; i++) {
-    if (!isxdigit(p[i]))
+    if (!isxdigit(p[i])) {
       return 0;
+    }
     c = (c << 4) | from_hex(p[i]);
   }
   return c;
@@ -807,15 +841,17 @@ static void convert_universal_chars(char *p) {
 
 Token *tokenize_file(char *path) {
   char *p = read_file(path);
-  if (!p)
+  if (!p) {
     return NULL;
+  }
 
   // UTF-8 texts may start with a 3-byte "BOM" marker sequence.
   // If exists, just skip them because they are useless bytes.
   // (It is actually not recommended to add BOM markers to UTF-8
   // texts, but it's not uncommon particularly on Windows.)
-  if (!memcmp(p, "\xef\xbb\xbf", 3))
+  if (!memcmp(p, "\xef\xbb\xbf", 3)) {
     p += 3;
+  }
 
   canonicalize_newline(p);
   remove_backslash_newline(p);

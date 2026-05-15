@@ -1,0 +1,5 @@
+BasedOnStyle: LLVM
+ColumnLimit: 100
+AlignAfterOpenBracket: BlockIndent
+AlignEscapedNewlines: DontAlign
+InsertBraces: true

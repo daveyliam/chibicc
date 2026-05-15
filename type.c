@@ -28,28 +28,30 @@ static Type *new_type(TypeKind kind, int size, int align) {
 
 bool is_integer(Type *ty) {
   TypeKind k = ty->kind;
-  return k == TY_BOOL || k == TY_CHAR || k == TY_SHORT || k == TY_INT ||
-         k == TY_LONG || k == TY_LONGLONG || k == TY_ENUM;
+  return k == TY_BOOL || k == TY_CHAR || k == TY_SHORT || k == TY_INT || k == TY_LONG ||
+         k == TY_LONGLONG || k == TY_ENUM;
 }
 
-bool is_flonum(Type *ty) {
-  return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE;
-}
+bool is_flonum(Type *ty) { return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE; }
 
 bool is_numeric(Type *ty) { return is_integer(ty) || is_flonum(ty); }
 
 bool is_compatible(Type *t1, Type *t2) {
-  if (t1 == t2)
+  if (t1 == t2) {
     return true;
+  }
 
-  if (t1->origin)
+  if (t1->origin) {
     return is_compatible(t1->origin, t2);
+  }
 
-  if (t2->origin)
+  if (t2->origin) {
     return is_compatible(t1, t2->origin);
+  }
 
-  if (t1->kind != t2->kind)
+  if (t1->kind != t2->kind) {
     return false;
+  }
 
   switch (t1->kind) {
   case TY_CHAR:
@@ -64,23 +66,27 @@ bool is_compatible(Type *t1, Type *t2) {
   case TY_PTR:
     return is_compatible(t1->base, t2->base);
   case TY_FUNC: {
-    if (!is_compatible(t1->return_ty, t2->return_ty))
+    if (!is_compatible(t1->return_ty, t2->return_ty)) {
       return false;
-    if (t1->is_variadic != t2->is_variadic)
+    }
+    if (t1->is_variadic != t2->is_variadic) {
       return false;
+    }
 
     Type *p1 = t1->params;
     Type *p2 = t2->params;
-    for (; p1 && p2; p1 = p1->next, p2 = p2->next)
-      if (!is_compatible(p1, p2))
+    for (; p1 && p2; p1 = p1->next, p2 = p2->next) {
+      if (!is_compatible(p1, p2)) {
         return false;
+      }
+    }
     return p1 == NULL && p2 == NULL;
   }
   case TY_ARRAY:
-    if (!is_compatible(t1->base, t2->base))
+    if (!is_compatible(t1->base, t2->base)) {
       return false;
-    return t1->array_len < 0 && t2->array_len < 0 &&
-           t1->array_len == t2->array_len;
+    }
+    return t1->array_len < 0 && t2->array_len < 0 && t1->array_len == t2->array_len;
   default:
     break;
   }
@@ -128,29 +134,38 @@ Type *enum_type(void) { return new_type(TY_ENUM, 4, 4); }
 Type *struct_type(void) { return new_type(TY_STRUCT, 0, 1); }
 
 static Type *get_common_type(Type *ty1, Type *ty2) {
-  if (ty1->base)
+  if (ty1->base) {
     return pointer_to(ty1->base);
+  }
 
-  if (ty1->kind == TY_FUNC)
+  if (ty1->kind == TY_FUNC) {
     return pointer_to(ty1);
-  if (ty2->kind == TY_FUNC)
+  }
+  if (ty2->kind == TY_FUNC) {
     return pointer_to(ty2);
+  }
 
-  if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE)
+  if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE) {
     return ty_double;
-  if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT)
+  }
+  if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT) {
     return ty_float;
+  }
 
-  if (ty1->size < 4)
+  if (ty1->size < 4) {
     ty1 = ty_int;
-  if (ty2->size < 4)
+  }
+  if (ty2->size < 4) {
     ty2 = ty_int;
+  }
 
-  if (ty1->size != ty2->size)
+  if (ty1->size != ty2->size) {
     return (ty1->size < ty2->size) ? ty2 : ty1;
+  }
 
-  if (ty2->is_unsigned)
+  if (ty2->is_unsigned) {
     return ty2;
+  }
   return ty1;
 }
 
@@ -176,8 +191,9 @@ static void usual_arith_conv(Node **lhs, Node **rhs) {
 }
 
 void add_type(Node *node) {
-  if (!node || node->ty)
+  if (!node || node->ty) {
     return;
+  }
 
   add_type(node->lhs);
   add_type(node->rhs);
@@ -187,10 +203,12 @@ void add_type(Node *node) {
   add_type(node->init);
   add_type(node->inc);
 
-  for (Node *n = node->body; n; n = n->next)
+  for (Node *n = node->body; n; n = n->next) {
     add_type(n);
-  for (Node *n = node->args; n; n = n->next)
+  }
+  for (Node *n = node->args; n; n = n->next) {
     add_type(n);
+  }
 
   // warn_tok(node->tok, "add_type, kind=%x", node->kind);
 
@@ -216,10 +234,12 @@ void add_type(Node *node) {
     return;
   }
   case ND_ASSIGN:
-    if (node->lhs->ty->kind == TY_ARRAY)
+    if (node->lhs->ty->kind == TY_ARRAY) {
       error_tok(node->lhs->tok, "not an lvalue");
-    if (node->lhs->ty->kind != TY_STRUCT)
+    }
+    if (node->lhs->ty->kind != TY_STRUCT) {
       node->rhs = new_cast(node->rhs, node->lhs->ty);
+    }
     node->ty = node->lhs->ty;
     return;
   case ND_EQ:
@@ -262,32 +282,35 @@ void add_type(Node *node) {
     return;
   case ND_ADDR: {
     Type *ty = node->lhs->ty;
-    if (ty->kind == TY_ARRAY)
+    if (ty->kind == TY_ARRAY) {
       node->ty = pointer_to(ty->base);
-    else
+    } else {
       node->ty = pointer_to(ty);
+    }
     return;
   }
   case ND_DEREF:
-    if (!node->lhs->ty->base)
+    if (!node->lhs->ty->base) {
       error_tok(node->tok, "invalid pointer dereference");
-    if (node->lhs->ty->base->kind == TY_VOID)
+    }
+    if (node->lhs->ty->base->kind == TY_VOID) {
       error_tok(node->tok, "dereferencing a void pointer");
+    }
 
     node->ty = node->lhs->ty->base;
     return;
   case ND_STMT_EXPR:
     if (node->body) {
       Node *stmt = node->body;
-      while (stmt->next)
+      while (stmt->next) {
         stmt = stmt->next;
+      }
       if (stmt->kind == ND_EXPR_STMT) {
         node->ty = stmt->lhs->ty;
         return;
       }
     }
-    error_tok(node->tok,
-              "statement expression returning void is not supported");
+    error_tok(node->tok, "statement expression returning void is not supported");
     return;
   case ND_LABEL_VAL:
     node->ty = pointer_to(ty_void);
@@ -298,14 +321,17 @@ void add_type(Node *node) {
     add_type(node->cas_new);
     node->ty = ty_bool;
 
-    if (node->cas_addr->ty->kind != TY_PTR)
+    if (node->cas_addr->ty->kind != TY_PTR) {
       error_tok(node->cas_addr->tok, "pointer expected");
-    if (node->cas_old->ty->kind != TY_PTR)
+    }
+    if (node->cas_old->ty->kind != TY_PTR) {
       error_tok(node->cas_old->tok, "pointer expected");
+    }
     return;
   case ND_EXCH:
-    if (node->lhs->ty->kind != TY_PTR)
+    if (node->lhs->ty->kind != TY_PTR) {
       error_tok(node->lhs->tok, "pointer expected");
+    }
     node->ty = node->lhs->ty->base;
     return;
   default:

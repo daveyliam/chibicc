@@ -874,7 +874,7 @@ static void gen_expr(Node *node) {
   case ND_BITNOT:
     gen_expr(node->lhs);
     emit_not();
-      // Need to fix upper bits if int is less than 64-bits.
+    // Need to fix upper bits if int is less than 64-bits.
     gen_integer_cast(node->lhs->ty);
     return;
   case ND_LOGAND: {
@@ -1317,8 +1317,8 @@ static void gen_stmt(Node *node) {
       Type *ty = node->lhs->ty;
       bool returns_struct = (ty->kind == TY_STRUCT) || (ty->kind == TY_UNION);
       if (returns_struct) {
-        // Structure returns should be written to the buffer pointed to by the first
-        // param (a hidden param inserted by the parser).
+        // Structure returns should be written to the buffer pointed to by the
+        // first param (a hidden param inserted by the parser).
         Obj *ret_buffer_var = current_fn->params;
         Type *return_ty = current_fn->ty->return_ty;
         gen_lvar_addr(ret_buffer_var);
@@ -1407,8 +1407,7 @@ static void resolve_names(Prog *progs) {
   }
 }
 
-static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
-                                   int *data_memsz) {
+static void calculate_gvar_offsets(Prog *progs, int *data_filesz, int *data_memsz) {
   // Calculate offsets of global vars with initialization data.
   int offset = 0;
 
@@ -1493,8 +1492,7 @@ static void emit_func(Obj *fn) {
   // Create label for each label node, and add that label to each goto node
   // that refers to the label.
   // TODO : Could move this to resolve_goto_labels in the parser.
-  for (Node *label_nd = fn->labels; label_nd;
-        label_nd = label_nd->goto_next) {
+  for (Node *label_nd = fn->labels; label_nd; label_nd = label_nd->goto_next) {
     if (label_nd->goto_label == NULL) {
       label_nd->goto_label = new_label();
     }
@@ -1611,7 +1609,7 @@ void codegen(Prog *progs, ByteArray *out) {
   emit_code(progs);
 
   int entry_point_offset = current_offset;
-  
+
   // Emit relocation handlers.
   // These fix up data-to-code and data-to-data references at runtime.
   Label *data_start_label = new_label();
@@ -1726,15 +1724,14 @@ void codegen(Prog *progs, ByteArray *out) {
           emit_i64(var->label->offset);          // st_value
           emit_i64(var->label->size);            // st_size
         } else {
-          int bind = var->is_static ? 0x0 : 0x1; // STB_LOCAL or STB_GLOBAL
-          int sec =
-              (var->init_data && !var->is_static) ? 2 : 3; // .data or .bss
-          emit_i32(str_offset);                            // st_name
-          emit_u8((bind << 4) | 0x1);   // st_info: STT_OBJECT
-          emit_u8(0);                   // st_other
-          emit_i16(sec);                // st_shndx
-          emit_i64(var->label->offset); // st_value
-          emit_i64(var->ty->size);      // st_size
+          int bind = var->is_static ? 0x0 : 0x1;                 // STB_LOCAL or STB_GLOBAL
+          int sec = (var->init_data && !var->is_static) ? 2 : 3; // .data or .bss
+          emit_i32(str_offset);                                  // st_name
+          emit_u8((bind << 4) | 0x1);                            // st_info: STT_OBJECT
+          emit_u8(0);                                            // st_other
+          emit_i16(sec);                                         // st_shndx
+          emit_i64(var->label->offset);                          // st_value
+          emit_i64(var->ty->size);                               // st_size
         }
         str_offset += strlen(var->name) + 1;
         symtab_count += 1;
@@ -1778,8 +1775,7 @@ void codegen(Prog *progs, ByteArray *out) {
 
   // Emit .shstrtab (section name table).
   int shstrtab_offset = current_offset;
-  const char *shstrtab =
-      "\x00.text\x00.data\x00.bss\x00.symtab\x00.strtab\x00.shstrtab\x00";
+  const char *shstrtab = "\x00.text\x00.data\x00.bss\x00.symtab\x00.strtab\x00.shstrtab\x00";
   emit_bytes(shstrtab, 1 + 6 + 6 + 5 + 8 + 8 + 10);
   int shstrtab_len = current_offset - shstrtab_offset;
 

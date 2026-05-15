@@ -34,26 +34,31 @@ static void add_default_include_paths(char *argv0) {
 
 static void define(char *str) {
   char *eq = strchr(str, '=');
-  if (eq)
+  if (eq) {
     define_macro(strndup(str, eq - str), eq + 1);
-  else
+  } else {
     define_macro(str, "1");
+  }
 }
 
 static void parse_args(int argc, char **argv) {
   // Make sure that all command line options that take an argument
   // have an argument.
-  for (int i = 1; i < argc; i++)
-    if (take_arg(argv[i]))
-      if (!argv[++i])
+  for (int i = 1; i < argc; i++) {
+    if (take_arg(argv[i])) {
+      if (!argv[++i]) {
         usage(1);
+      }
+    }
+  }
 
   StringArray idirafter = {};
 
   for (int i = 1; i < argc; i++) {
 
-    if (!strcmp(argv[i], "--help"))
+    if (!strcmp(argv[i], "--help")) {
       usage(0);
+    }
 
     if (!strcmp(argv[i], "-o")) {
       opt_o = argv[++i];
@@ -105,29 +110,30 @@ static void parse_args(int argc, char **argv) {
     }
 
     // These options are ignored for now.
-    if (!strncmp(argv[i], "-O", 2) || !strncmp(argv[i], "-W", 2) ||
-        !strncmp(argv[i], "-g", 2) || !strncmp(argv[i], "-std=", 5) ||
-        !strcmp(argv[i], "-ffreestanding") ||
-        !strcmp(argv[i], "-fno-builtin") ||
-        !strcmp(argv[i], "-fno-omit-frame-pointer") ||
-        !strcmp(argv[i], "-fno-stack-protector") ||
-        !strcmp(argv[i], "-fno-strict-aliasing") || !strcmp(argv[i], "-m64") ||
-        !strcmp(argv[i], "-mno-red-zone") || !strcmp(argv[i], "-w"))
+    if (!strncmp(argv[i], "-O", 2) || !strncmp(argv[i], "-W", 2) || !strncmp(argv[i], "-g", 2) ||
+        !strncmp(argv[i], "-std=", 5) || !strcmp(argv[i], "-ffreestanding") ||
+        !strcmp(argv[i], "-fno-builtin") || !strcmp(argv[i], "-fno-omit-frame-pointer") ||
+        !strcmp(argv[i], "-fno-stack-protector") || !strcmp(argv[i], "-fno-strict-aliasing") ||
+        !strcmp(argv[i], "-m64") || !strcmp(argv[i], "-mno-red-zone") || !strcmp(argv[i], "-w")) {
       continue;
+    }
 
-    if (argv[i][0] == '-' && argv[i][1] != '\0')
+    if (argv[i][0] == '-' && argv[i][1] != '\0') {
       error("unknown argument: %s", argv[i]);
+    }
 
     strarray_push(&input_paths, argv[i]);
   }
 
-  for (int i = 0; i < idirafter.len; i++)
+  for (int i = 0; i < idirafter.len; i++) {
     strarray_push(&include_paths, idirafter.data[i]);
+  }
 
   strarray_free(&idirafter);
 
-  if (input_paths.len == 0)
+  if (input_paths.len == 0) {
     error("no input files");
+  }
 }
 
 // Returns true if a given file exists.
@@ -138,18 +144,21 @@ bool file_exists(char *path) {
 
 static Token *must_tokenize_file(char *path) {
   Token *tok = tokenize_file(path);
-  if (!tok)
+  if (!tok) {
     error("%s: %s", path, strerror(errno));
+  }
   return tok;
 }
 
 static Token *append_tokens(Token *tok1, Token *tok2) {
-  if (!tok1 || tok1->kind == TK_EOF)
+  if (!tok1 || tok1->kind == TK_EOF) {
     return tok2;
+  }
 
   Token *t = tok1;
-  while (t->next->kind != TK_EOF)
+  while (t->next->kind != TK_EOF) {
     t = t->next;
+  }
   t->next = tok2;
   return tok1;
 }
@@ -177,8 +186,9 @@ static Obj *cc1(void) {
       path = incl;
     } else {
       path = search_include_paths(incl);
-      if (!path)
+      if (!path) {
         error("-include: %s: %s", incl, strerror(errno));
+      }
     }
 
     Token *tok2 = must_tokenize_file(path);
@@ -194,12 +204,14 @@ static Obj *cc1(void) {
 }
 
 static FILE *open_file(const char *path) {
-  if (!path || strcmp(path, "-") == 0)
+  if (!path || strcmp(path, "-") == 0) {
     return stdout;
+  }
 
   FILE *out = fopen(path, "w");
-  if (!out)
+  if (!out) {
     error("cannot open output file: %s: %s", path, strerror(errno));
+  }
   return out;
 }
 
@@ -236,7 +248,7 @@ int main(int argc, char **argv) {
 
   // Codegen to temporary output buffer in case we need to
   // seek and the output file is stdout.
-  ByteArray buf = {0}; 
+  ByteArray buf = {0};
   codegen(progs_head.next, &buf);
 
   // Write codegen output to output file.
