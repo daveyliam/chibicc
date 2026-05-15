@@ -47,7 +47,7 @@ typedef struct {
 } StringArray;
 
 void strarray_push(StringArray *arr, char *s);
-void strarray_free(StringArray *arr);
+void strarray_free(StringArray *arr, bool should_free_elems);
 char *format(char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 typedef struct {
@@ -326,6 +326,7 @@ Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
 Obj *parse(Token *tok);
 void reset_parse(void);
+void prog_free(Prog *prog);
 
 //
 // type.c
@@ -488,6 +489,16 @@ void hashmap_put2(HashMap *map, char *key, int keylen, void *val);
 void hashmap_delete(HashMap *map, char *key);
 void hashmap_delete2(HashMap *map, char *key, int keylen);
 void hashmap_clear(HashMap *map);
+
+//
+// gc.c
+//
+
+void *gc_alloc(size_t size);
+char *gc_strndup(const char *s, size_t n);
+char *gc_strdup(const char *s);
+void gc_free(void *r);
+void gc_free_all(void);
 
 //
 // main.c

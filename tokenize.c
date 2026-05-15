@@ -11,6 +11,8 @@ static bool has_space;
 
 static int tokenize_file_no;
 
+static HashMap keywords_map = {};
+
 // Reports an error and exit.
 void error(char *fmt, ...) {
   va_list ap;
@@ -111,7 +113,7 @@ bool consume(Token **rest, Token *tok, char *str) {
 
 // Create a new token.
 static Token *new_token(TokenKind kind, char *start, char *end) {
-  Token *tok = calloc(1, sizeof(Token));
+  Token *tok = gc_alloc(sizeof(Token));
   tok->kind = kind;
   tok->loc = start;
   tok->len = end - start;
@@ -172,9 +174,7 @@ static int read_punct(char *p) {
 }
 
 static bool is_keyword(Token *tok) {
-  static HashMap map;
-
-  if (map.capacity == 0) {
+  if (keywords_map.capacity == 0) {
     static char *kw[] = {
         "return",    "if",         "else",
         "for",       "while",      "int",
@@ -194,11 +194,11 @@ static bool is_keyword(Token *tok) {
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
-      hashmap_put(&map, kw[i], (void *)1);
+      hashmap_put(&keywords_map, kw[i], (void *)1);
     }
   }
 
-  return hashmap_get2(&map, tok->loc, tok->len);
+  return hashmap_get2(&keywords_map, tok->loc, tok->len);
 }
 
 static uint32_t read_escaped_char(char **new_pos, char *p) {
@@ -285,7 +285,7 @@ static char *string_literal_end(char *p) {
 
 static Token *read_string_literal(char *start, char *quote) {
   char *end = string_literal_end(quote + 1);
-  char *buf = calloc(1, end - quote);
+  char *buf = gc_alloc(end - quote);
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
@@ -311,7 +311,7 @@ static Token *read_string_literal(char *start, char *quote) {
 // is called a "surrogate pair".
 static Token *read_utf16_string_literal(char *start, char *quote) {
   char *end = string_literal_end(quote + 1);
-  uint16_t *buf = calloc(2, end - start);
+  uint16_t *buf = gc_alloc(2 * (end - start));
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
@@ -344,7 +344,7 @@ static Token *read_utf16_string_literal(char *start, char *quote) {
 // encoded in 4 bytes.
 static Token *read_utf32_string_literal(char *start, char *quote, Type *ty) {
   char *end = string_literal_end(quote + 1);
-  uint32_t *buf = calloc(4, end - quote);
+  uint32_t *buf = gc_alloc(4 * (end - quote));
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
@@ -711,9 +711,7 @@ static char *read_file(char *path) {
     }
   }
 
-  char *buf;
-  size_t buflen;
-  FILE *out = open_memstream(&buf, &buflen);
+  ByteArray arr = {};
 
   // Read the entire file.
   for (;;) {
@@ -722,7 +720,7 @@ static char *read_file(char *path) {
     if (n == 0) {
       break;
     }
-    fwrite(buf2, 1, n, out);
+    bytearray_extend(&arr, (uint8_t*)buf2, n);
   }
 
   if (fp != stdin) {
@@ -730,17 +728,15 @@ static char *read_file(char *path) {
   }
 
   // Make sure that the last line is properly terminated with '\n'.
-  fflush(out);
-  if (buflen == 0 || buf[buflen - 1] != '\n') {
-    fputc('\n', out);
+  if (arr.len == 0 || arr.data[arr.len - 1] != '\n') {
+    bytearray_append(&arr, '\n');
   }
-  fputc('\0', out);
-  fclose(out);
-  return buf;
+  bytearray_append(&arr, '\0');
+  return (char*)arr.data;
 }
 
 File *new_file(char *name, int file_no, char *contents) {
-  File *file = calloc(1, sizeof(File));
+  File *file = gc_alloc(sizeof(File));
   file->name = name;
   file->display_name = name;
   file->file_no = file_no;
@@ -869,4 +865,7 @@ void reset_tokenize(void) {
   at_bol = false;
   has_space = false;
   tokenize_file_no = 0;
+  // TODO : should only call this at compiler exit, rather than after every
+  //   translation unit.
+  hashmap_clear(&keywords_map);
 }

@@ -119,6 +119,8 @@ static Obj *builtin_syscall3;
 static int anon_gvar_id_next = 0;
 static int anon_string_literal_id_next = 0;
 
+static HashMap typenames_map = {};
+
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Type *typename(Token **rest, Token *tok);
@@ -172,7 +174,7 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr);
 static int align_down(int n, int align) { return align_to(n - align + 1, align); }
 
 static void enter_scope(void) {
-  Scope *sc = calloc(1, sizeof(Scope));
+  Scope *sc = gc_alloc(sizeof(Scope));
   sc->next = scope;
   scope = sc;
 }
@@ -201,7 +203,7 @@ static Type *find_tag(Token *tok) {
 }
 
 static Node *new_node(NodeKind kind, Token *tok) {
-  Node *node = calloc(1, sizeof(Node));
+  Node *node = gc_alloc(sizeof(Node));
   node->kind = kind;
   node->tok = tok;
   return node;
@@ -255,7 +257,7 @@ static Node *new_vla_ptr(Obj *var, Token *tok) {
 Node *new_cast(Node *expr, Type *ty) {
   add_type(expr);
 
-  Node *node = calloc(1, sizeof(Node));
+  Node *node = gc_alloc(sizeof(Node));
   node->kind = ND_CAST;
   node->tok = expr->tok;
   node->lhs = expr;
@@ -264,13 +266,13 @@ Node *new_cast(Node *expr, Type *ty) {
 }
 
 static VarScope *push_scope(char *name) {
-  VarScope *sc = calloc(1, sizeof(VarScope));
+  VarScope *sc = gc_alloc(sizeof(VarScope));
   hashmap_put(&scope->vars, name, sc);
   return sc;
 }
 
 static Initializer *new_initializer(Type *ty, bool is_flexible) {
-  Initializer *init = calloc(1, sizeof(Initializer));
+  Initializer *init = gc_alloc(sizeof(Initializer));
   init->ty = ty;
 
   if (ty->kind == TY_ARRAY) {
@@ -279,7 +281,7 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
       return init;
     }
 
-    init->children = calloc(ty->array_len, sizeof(Initializer *));
+    init->children = gc_alloc(ty->array_len * sizeof(Initializer *));
     for (int i = 0; i < ty->array_len; i++) {
       init->children[i] = new_initializer(ty->base, false);
     }
@@ -293,11 +295,11 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
       len++;
     }
 
-    init->children = calloc(len, sizeof(Initializer *));
+    init->children = gc_alloc(len * sizeof(Initializer *));
 
     for (Member *mem = ty->members; mem; mem = mem->next) {
       if (is_flexible && ty->is_flexible && !mem->next) {
-        Initializer *child = calloc(1, sizeof(Initializer));
+        Initializer *child = gc_alloc(sizeof(Initializer));
         child->ty = mem->ty;
         child->is_flexible = true;
         init->children[mem->idx] = child;
@@ -312,7 +314,7 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
 }
 
 static Obj *new_var(char *name, Type *ty) {
-  Obj *var = calloc(1, sizeof(Obj));
+  Obj *var = gc_alloc(sizeof(Obj));
   var->name = name;
   var->ty = ty;
   var->align = ty->align;
@@ -356,7 +358,7 @@ static char *get_ident(Token *tok) {
   if (tok->kind != TK_IDENT) {
     error_tok(tok, "expected an identifier");
   }
-  return strndup(tok->loc, tok->len);
+  return gc_strndup(tok->loc, tok->len);
 }
 
 static Type *find_typedef(Token *tok) {
@@ -1377,7 +1379,7 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
 //   Member head = {};
 //   Member *cur = &head;
 //   for (Member *mem = ty->members; mem; mem = mem->next) {
-//     Member *m = calloc(1, sizeof(Member));
+//     Member *m = gc_alloc(sizeof(Member));
 //     *m = *mem;
 //     cur = cur->next = m;
 //   }
@@ -1602,7 +1604,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
     return cur;
   }
 
-  Relocation *rel = calloc(1, sizeof(Relocation));
+  Relocation *rel = gc_alloc(sizeof(Relocation));
   rel->offset = offset;
   rel->var = gvar;
   rel->addend = val;
@@ -1626,7 +1628,7 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
 
   Relocation head = {};
   int init_data_size = get_init_size(init);
-  char *buf = calloc(1, init_data_size);
+  char *buf = gc_alloc(init_data_size);
   write_gvar_data(&head, init, var->ty, buf, 0);
   var->init_data = buf;
   var->init_data_size = init_data_size;
@@ -1635,9 +1637,7 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
 
 // Returns true if a given token represents a type.
 static bool is_typename(Token *tok) {
-  static HashMap map;
-
-  if (map.capacity == 0) {
+  if (typenames_map.capacity == 0) {
     static char *kw[] = {
         "void",     "_Bool",    "char",       "short",         "int",       "long",
         "struct",   "union",    "typedef",    "enum",          "static",    "extern",
@@ -1647,11 +1647,11 @@ static bool is_typename(Token *tok) {
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
-      hashmap_put(&map, kw[i], (void *)1);
+      hashmap_put(&typenames_map, kw[i], (void *)1);
     }
   }
 
-  return hashmap_get2(&map, tok->loc, tok->len) || find_typedef(tok);
+  return hashmap_get2(&typenames_map, tok->loc, tok->len) || find_typedef(tok);
 }
 
 // asm-stmt = "asm" ("volatile" | "inline")* "(" string-literal ")"
@@ -1895,7 +1895,7 @@ static Node *stmt(Token **rest, Token *tok) {
 
   if (tok->kind == TK_IDENT && equal(tok->next, ":")) {
     Node *node = new_node(ND_LABEL, tok);
-    node->label = strndup(tok->loc, tok->len);
+    node->label = gc_strndup(tok->loc, tok->len);
     node->lhs = stmt(rest, tok->next->next);
     node->goto_next = labels;
     labels = node;
@@ -2771,7 +2771,7 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
 
     // Anonymous struct member
     if ((basety->kind == TY_STRUCT || basety->kind == TY_UNION) && consume(&tok, tok, ";")) {
-      Member *mem = calloc(1, sizeof(Member));
+      Member *mem = gc_alloc(sizeof(Member));
       mem->ty = basety;
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
@@ -2786,7 +2786,7 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       }
       first = false;
 
-      Member *mem = calloc(1, sizeof(Member));
+      Member *mem = gc_alloc(sizeof(Member));
       mem->ty = declarator(&tok, tok, basety);
       mem->name = mem->ty->name;
       mem->idx = idx++;
@@ -3681,7 +3681,7 @@ void reset_parse(void) {
   locals = NULL;
   globals_head.next = NULL;
   globals = &globals_head;
-  scope = calloc(1, sizeof(Scope));
+  scope = gc_alloc(sizeof(Scope));
   current_fn = NULL;
   gotos = NULL;
   labels = NULL;
@@ -3691,6 +3691,17 @@ void reset_parse(void) {
   current_switch = NULL;
   anon_gvar_id_next = 0;
   anon_string_literal_id_next = 0;
+  hashmap_clear(&typenames_map);
 
   declare_builtin_functions();
+}
+
+void prog_free(Prog *prog) {
+  for (Obj *obj = prog->obj; obj;) {
+    Obj *obj_next = obj->next;
+    // TODO : recurse and free all members.
+    gc_free(obj);
+    obj = obj_next;
+  }
+  gc_free(prog);
 }

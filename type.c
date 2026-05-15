@@ -19,7 +19,7 @@ Type *ty_float = &(Type){TY_FLOAT, 4, 4};
 Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
 
 static Type *new_type(TypeKind kind, int size, int align) {
-  Type *ty = calloc(1, sizeof(Type));
+  Type *ty = gc_alloc(sizeof(Type));
   ty->kind = kind;
   ty->size = size;
   ty->align = align;
@@ -94,7 +94,7 @@ bool is_compatible(Type *t1, Type *t2) {
 }
 
 Type *copy_type(Type *ty) {
-  Type *ret = calloc(1, sizeof(Type));
+  Type *ret = gc_alloc(sizeof(Type));
   *ret = *ty;
   ret->origin = ty;
   return ret;

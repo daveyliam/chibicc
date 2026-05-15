@@ -29,13 +29,18 @@ static bool take_arg(char *arg) {
 static void add_default_include_paths(char *argv0) {
   // We expect that chibicc-specific include files are installed
   // to ./include relative to argv[0].
-  strarray_push(&include_paths, format("%s/include", dirname(strdup(argv0))));
+  char *argv0_copy = gc_strdup(argv0);
+  char *path = format("%s/include", dirname(argv0_copy));
+  strarray_push(&include_paths, path);
+  gc_free(argv0_copy);
 }
 
 static void define(char *str) {
   char *eq = strchr(str, '=');
   if (eq) {
-    define_macro(strndup(str, eq - str), eq + 1);
+    char *name = gc_strndup(str, eq - str);
+    define_macro(name, eq + 1);
+    gc_free(name);
   } else {
     define_macro(str, "1");
   }
@@ -71,7 +76,7 @@ static void parse_args(int argc, char **argv) {
     }
 
     if (!strncmp(argv[i], "-I", 2)) {
-      strarray_push(&include_paths, argv[i] + 2);
+      strarray_push(&include_paths, gc_strdup(argv[i] + 2));
       continue;
     }
 
@@ -126,10 +131,10 @@ static void parse_args(int argc, char **argv) {
   }
 
   for (int i = 0; i < idirafter.len; i++) {
-    strarray_push(&include_paths, idirafter.data[i]);
+    strarray_push(&include_paths, gc_strdup(idirafter.data[i]));
   }
 
-  strarray_free(&idirafter);
+  strarray_free(&idirafter, false);
 
   if (input_paths.len == 0) {
     error("no input files");
@@ -231,7 +236,7 @@ int main(int argc, char **argv) {
     init_macros();
     add_default_include_paths(argv[0]);
 
-    Prog *prog = calloc(1, sizeof(Prog));
+    Prog *prog = gc_alloc(sizeof(Prog));
     prog->base_file = input;
     prog->index = i;
 
@@ -246,10 +251,21 @@ int main(int argc, char **argv) {
     progs_tail = prog;
   }
 
+  reset_tokenize();
+  reset_preprocess();
+  reset_parse();
+
   // Codegen to temporary output buffer in case we need to
   // seek and the output file is stdout.
   ByteArray buf = {0};
   codegen(progs_head.next, &buf);
+
+  // Free progs.
+  for (Prog *prog = progs_head.next; prog;) {
+    Prog *prog_next = prog->next;
+    prog_free(prog);
+    prog = prog_next;
+  }
 
   // Write codegen output to output file.
   const char *out_path = opt_o ? opt_o : "a.out";
@@ -260,9 +276,12 @@ int main(int argc, char **argv) {
 
   bytearray_free(&buf);
 
-  strarray_free(&include_paths);
-  strarray_free(&opt_define);
-  strarray_free(&opt_include);
+  strarray_free(&include_paths, true);
+  strarray_free(&input_paths, false);
+  strarray_free(&opt_define, false);
+  strarray_free(&opt_include, false);
+
+  gc_free_all();
 
   return 0;
 }

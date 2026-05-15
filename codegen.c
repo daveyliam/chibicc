@@ -28,7 +28,7 @@ static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
 static Label *new_label(void) {
-  Label *label = calloc(1, sizeof(Label));
+  Label *label = gc_alloc(sizeof(Label));
   if (labels) {
     label->next = labels;
   }
@@ -39,7 +39,7 @@ static Label *new_label(void) {
 static void label_set_dest(Label *label) { label->offset = current_offset; }
 
 static LabelRef *label_add_ref(Label *label) {
-  LabelRef *ref = calloc(1, sizeof(LabelRef));
+  LabelRef *ref = gc_alloc(sizeof(LabelRef));
   ref->offset = current_offset;
   if (label->refs) {
     ref->next = label->refs;

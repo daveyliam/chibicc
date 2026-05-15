@@ -28,7 +28,6 @@ build/test_early/%.exe: test_early/%.c chibicc
 	./chibicc -o build/test_early/$*.exe $<
 
 test_early: $(EARLY_TESTS)
-	ASAN_OPTIONS="detect_leaks=0" \
 	./chibicc -o build/test_early/simple.exe test_early/simple.c
 	./build/test_early/simple.exe; \
 	if [[ $$? -eq 30 ]]; then \
@@ -40,7 +39,6 @@ test_early: $(EARLY_TESTS)
 	./build/test_early/write.exe
 
 build/test/%.exe: test/%.c chibicc
-	ASAN_OPTIONS="detect_leaks=0" \
 	./chibicc -Itest -DTEST_NAME='"$<"' -o build/test/$*.exe \
 	  $< test/common.c libc/libc.c
 
@@ -55,8 +53,7 @@ test: $(TESTS)
 	  echo "$$fail tests failed"; \
 	  exit 1; \
 	fi
-	ASAN_OPTIONS="detect_leaks=0" \
-	  test/driver.sh ./chibicc
+	test/driver.sh ./chibicc
 
 # test-all: test test-stage2
 

@@ -2,12 +2,15 @@
 
 void strarray_push(StringArray *arr, char *s) {
   if (!arr->data) {
-    arr->data = calloc(8, sizeof(char *));
+    arr->data = gc_alloc(8 * sizeof(char *));
     arr->capacity = 8;
   }
 
   if (arr->capacity == arr->len) {
-    arr->data = realloc(arr->data, sizeof(char *) * arr->capacity * 2);
+    char **data2 = gc_alloc(sizeof(char *) * arr->capacity * 2);
+    memcpy(data2, arr->data, sizeof(char *) * arr->len);
+    gc_free(arr->data);
+    arr->data = data2;
     arr->capacity *= 2;
     for (int i = arr->len; i < arr->capacity; i++) {
       arr->data[i] = NULL;
@@ -17,35 +20,57 @@ void strarray_push(StringArray *arr, char *s) {
   arr->data[arr->len++] = s;
 }
 
-void strarray_free(StringArray *arr) {
+void strarray_free(StringArray *arr, bool should_free_elems) {
   if (arr->data) {
-    free(arr->data);
+    if (should_free_elems) {
+      for (int i = 0; i < arr->len; i++) {
+        gc_free(arr->data[i]);
+        arr->data[i] = NULL;
+      }
+    }
+    gc_free(arr->data);
     arr->data = NULL;
   }
+  arr->len = 0;
+  arr->capacity = 0;
 }
 
 // Takes a printf-style format string and returns a formatted string.
 char *format(char *fmt, ...) {
-  char *buf;
-  size_t buflen;
-  FILE *out = open_memstream(&buf, &buflen);
-
   va_list ap;
   va_start(ap, fmt);
-  vfprintf(out, fmt, ap);
+  int n = vsnprintf(NULL, 0, fmt, ap);
   va_end(ap);
-  fclose(out);
+
+  if (n < 0) {
+    fputs("error: format: vsnprintf failed\n", stderr);
+    exit(1);
+  }
+
+  char *buf = gc_alloc(n + 1);
+
+  va_start(ap, fmt);
+  vsnprintf(buf, n + 1, fmt, ap);
+  va_end(ap);
+
   return buf;
 }
 
 void bytearray_append(ByteArray *arr, uint8_t b) {
   if (arr->len >= arr->cap) {
+    int cap2;
     if (arr->cap < 8) {
-      arr->cap = 8;
+      cap2 = 8;
     } else {
-      arr->cap *= 2;
+      cap2 = arr->cap * 2;
     }
-    arr->data = realloc(arr->data, arr->cap);
+    uint8_t *data2 = gc_alloc(cap2);
+    if (arr->data != NULL) {
+      memcpy(data2, arr->data, arr->len);
+      gc_free(arr->data);
+    }
+    arr->data = data2;
+    arr->cap = cap2;
     memset(arr->data + arr->len, 0, arr->cap - arr->len);
   }
   arr->data[arr->len++] = b;
@@ -59,7 +84,7 @@ void bytearray_extend(ByteArray *arr, uint8_t *data, int len) {
 
 void bytearray_free(ByteArray *arr) {
   if (arr->data) {
-    free(arr->data);
+    gc_free(arr->data);
     arr->data = NULL;
   }
   arr->len = 0;
