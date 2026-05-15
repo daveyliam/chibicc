@@ -97,6 +97,8 @@ int strcmp(const char *s1, const char *s2) {
         if (!b1 || !b2) {
             break;
         }
+        s1++;
+        s2++;
     }
     return 0;
 }

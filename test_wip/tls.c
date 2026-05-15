@@ -22,7 +22,7 @@ int thread_main(void *unused) {
   return 0;
 }
 
-int main() {
+int test_main() {
   pthread_t thr;
 
   ASSERT(0, v1);
@@ -36,6 +36,5 @@ int main() {
   ASSERT(5, v2);
   ASSERT(3, v3);
 
-  printf("OK\n");
   return 0;
 }

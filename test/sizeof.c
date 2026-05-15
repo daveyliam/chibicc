@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(1, sizeof(char));
   ASSERT(2, sizeof(short));
   ASSERT(2, sizeof(short int));
@@ -108,8 +108,7 @@ int main() {
 
   // ASSERT(16, sizeof(long double));
 
-  ASSERT(1, sizeof(main));
+  ASSERT(1, sizeof(test_main));
 
-  printf("OK\n");
   return 0;
 }

@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(3, ({ int x=3; *&x; }));
   ASSERT(3, ({ int x=3; int *y=&x; int **z=&y; **z; }));
   // TODO : Is this not undefined or at least implementation-defined behavior?
@@ -41,6 +41,5 @@ int main() {
   ASSERT(4, ({ int x[2][3]; int *y=x; y[4]=4; x[1][1]; }));
   ASSERT(5, ({ int x[2][3]; int *y=x; y[5]=5; x[1][2]; }));
 
-  printf("OK\n");
   return 0;
 }

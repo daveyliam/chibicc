@@ -6,7 +6,7 @@ struct {
   int c : 10;
 } g45 = {1, 2, 3}, g46={};
 
-int main() {
+int test_main() {
   ASSERT(4, sizeof(struct {int x:1; }));
   ASSERT(8, sizeof(struct {long x:1; }));
 
@@ -52,6 +52,5 @@ int main() {
   ASSERT(8, sizeof(struct {int a:3; int:0; int c:5;}));
   ASSERT(4, sizeof(struct {int a:3; int:0;}));
 
-  printf("OK\n");
   return 0;
 }

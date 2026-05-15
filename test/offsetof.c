@@ -8,12 +8,11 @@ typedef struct {
   double d;
 } T;
 
-int main() {
+int test_main() {
   ASSERT(0, offsetof(T, a));
   ASSERT(4, offsetof(T, b));
   ASSERT(8, offsetof(T, c));
   ASSERT(16, offsetof(T, d));
 
-  printf("OK\n");
   return 0;
 }

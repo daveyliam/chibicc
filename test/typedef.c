@@ -3,7 +3,7 @@
 typedef int MyInt, MyInt2[4];
 typedef int;
 
-int main() {
+int test_main() {
   ASSERT(1, ({ typedef int t; t x=1; x; }));
   ASSERT(1, ({ typedef struct {int a;} t; t x; x.a=1; x.a; }));
   // Clang: error: redefinition of 't' as different kind of symbol
@@ -17,6 +17,5 @@ int main() {
   ASSERT(3, ({ MyInt x=3; x; }));
   ASSERT(16, ({ MyInt2 x; sizeof(x); }));
 
-  printf("OK\n");
   return 0;
 }

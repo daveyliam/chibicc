@@ -6,4 +6,4 @@
 
 #define ASSERT(x, y) assert(x, y, #y)
 
-void assert(int expected, int actual, char *code);
+void assert(int expected, int actual, const char *code);

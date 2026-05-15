@@ -38,7 +38,7 @@ int sum1(int x, ...) {
 //   va_end(ap2);
 // }
 
-int main() {
+int test_main() {
   ASSERT(6, sum1(1, 2, 3, 0));
   ASSERT(55, sum1(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0));
   // ASSERT(21, sum2(1, 2.0, 3, 4.0, 5, 6.0, 0));
@@ -48,6 +48,5 @@ int main() {
   // ));
   // ASSERT(0, ({ char buf[100]; fmt(buf, "%d %d", 2, 3); strcmp(buf, "2 3"); }));
 
-  printf("OK\n");
   return 0;
 }

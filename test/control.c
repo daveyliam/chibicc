@@ -4,7 +4,7 @@
  * This is a block comment.
  */
 
-int main() {
+int test_main() {
   ASSERT(3, ({ int x; if (0) x=2; else x=3; x; }));
   ASSERT(3, ({ int x; if (1-1) x=2; else x=3; x; }));
   ASSERT(2, ({ int x; if (1) x=2; else x=3; x; }));
@@ -99,6 +99,5 @@ int main() {
   // ASSERT(2, ({ static void *p[]={&&v52,&&v52,&&v53}; int i=0; goto *p[1]; v51:i++; v52:i++; v53:i++; i; }));
   // ASSERT(1, ({ static void *p[]={&&v62,&&v62,&&v63}; int i=0; goto *p[2]; v61:i++; v62:i++; v63:i++; i; }));
 
-  printf("OK\n");
   return 0;
 }

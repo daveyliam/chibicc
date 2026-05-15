@@ -8,7 +8,7 @@ typedef int wchar_t;
 
 int π = 3;
 
-int main() {
+int test_main() {
   ASSERT(4, sizeof(L'\0'));
   ASSERT(97, L'a');
 
@@ -100,6 +100,5 @@ int main() {
   ASSERT(3, ({ int あβ0¾=3; あβ0¾; }));
   ASSERT(5, ({ int $$$=5; $$$; }));
 
-  printf("OK\n");
   return 0;
 }

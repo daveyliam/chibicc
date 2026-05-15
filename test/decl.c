@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(1, ({ char x; sizeof(x); }));
   ASSERT(2, ({ short int x; sizeof(x); }));
   ASSERT(2, ({ int short x; sizeof(x); }));
@@ -17,6 +17,5 @@ int main() {
   ASSERT(1, (_Bool)2);
   ASSERT(0, (_Bool)(char)256);
 
-  printf("OK\n");
   return 0;
 }

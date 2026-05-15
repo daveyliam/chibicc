@@ -14,10 +14,9 @@ char *asm_fn2(void) {
                       "ret");
 }
 
-int main() {
+int test_main() {
   ASSERT(50, asm_fn1());
   ASSERT(55, asm_fn2());
 
-  printf("OK\n");
   return 0;
 }

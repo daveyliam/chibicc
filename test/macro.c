@@ -21,7 +21,7 @@ int add6(int a, int b, int c, int d, int e, int f) {
   return a + b + c + d + e + f;
 }
 
-int main() {
+int test_main() {
   ASSERT(5, include1);
   ASSERT(7, include2);
 
@@ -410,6 +410,5 @@ int main() {
 #define M31(x, y) (1, ##x y)
   ASSERT(3, M31(, 3));
 
-  printf("OK\n");
   return 0;
 }

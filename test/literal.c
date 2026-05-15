@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(97, 'a');
   ASSERT(10, '\n');
   ASSERT(-128, '\x80');
@@ -100,6 +100,5 @@ of(char), \
   ASSERT(4, sizeof(L'\0'));
   ASSERT(97, L'a');
 
-  printf("OK\n");
   return 0;
 }

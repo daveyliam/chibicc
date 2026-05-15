@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(0, ""[0]);
   ASSERT(1, sizeof(""));
 
@@ -67,6 +67,5 @@ int main() {
   ASSERT(L'c', ("a" "b" L"c")[2]);
   ASSERT(0, ("a" "b" L"c")[3]);
 
-  printf("OK\n");
   return 0;
 }

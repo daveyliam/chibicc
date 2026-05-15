@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(131585, (int)8590066177);
   ASSERT(513, (short)8590066177);
   ASSERT(1, (char)8590066177);
@@ -54,6 +54,5 @@ int main() {
   // ASSERT(3, (float)3L);
   // ASSERT(3, (double)3L);
 
-  printf("OK\n");
   return 0;
 }

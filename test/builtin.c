@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(1, __builtin_types_compatible_p(int, int));
   ASSERT(1, __builtin_types_compatible_p(double, double));
   ASSERT(0, __builtin_types_compatible_p(int, long));
@@ -29,6 +29,5 @@ int main() {
 
   ASSERT(1, ({ struct {int a; int b;} x; __builtin_types_compatible_p(typeof(x.a), typeof(x.b)); }));
 
-  printf("OK\n");
   return 0;
 }

@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(0, ({ enum { zero, one, two }; zero; }));
   ASSERT(1, ({ enum { zero, one, two }; one; }));
   ASSERT(2, ({ enum { zero, one, two }; two; }));
@@ -13,6 +13,5 @@ int main() {
   ASSERT(4, ({ enum { zero, one, two } x; sizeof(x); }));
   ASSERT(4, ({ enum t { zero, one, two }; enum t y; sizeof(y); }));
 
-  printf("OK\n");
   return 0;
 }

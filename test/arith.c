@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(0, 0);
   ASSERT(42, 42);
   ASSERT(21, 5+20-4);
@@ -139,6 +139,5 @@ int main() {
   // ASSERT(6, (long double)3*2);
   // ASSERT(5, (long double)3+2.0);
 
-  printf("OK\n");
   return 0;
 }

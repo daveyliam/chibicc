@@ -2,20 +2,13 @@
 
 #define SEG_ALIGN 4096
 
-typedef enum {
-  LABEL_CODE,
-  LABEL_DATA,
-} LabelKind;
-
 typedef struct LabelRef {
   struct LabelRef *next;
-  LabelKind kind;
   int offset;
 } LabelRef;
 
 typedef struct Label {
   struct Label *next;
-  LabelKind kind;
   int offset;
   int size;
   struct LabelRef *refs;
@@ -34,9 +27,8 @@ static Label *labels = NULL;
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
-static Label *new_label(LabelKind kind) {
+static Label *new_label(void) {
   Label *label = calloc(1, sizeof(Label));
-  label->kind = kind;
   if (labels) {
     label->next = labels;
   }
@@ -44,13 +36,10 @@ static Label *new_label(LabelKind kind) {
   return label;
 }
 
-static void label_set_dest(Label *label) {
-  label->offset = current_offset;
-}
+static void label_set_dest(Label *label) { label->offset = current_offset; }
 
-static LabelRef *label_add_ref(Label *label, LabelKind ref_kind) {
+static LabelRef *label_add_ref(Label *label) {
   LabelRef *ref = calloc(1, sizeof(LabelRef));
-  ref->kind = ref_kind;
   ref->offset = current_offset;
   if (label->refs) {
     ref->next = label->refs;
@@ -176,12 +165,14 @@ static void emit_mul(void) {
 
 static void emit_div_u(void) {
   emit_bytes("\x48\x31\xd2", 3); // xor rdx, rdx
-  emit_bytes("\x48\xf7\xf1", 3); // div rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
+  emit_bytes("\x48\xf7\xf1",
+             3); // div rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
 }
 
 static void emit_div_s(void) {
-  emit_bytes("\x48\x99", 2);     // cqo (extend rax to rdx:rax)
-  emit_bytes("\x48\xf7\xf9", 3); // idiv rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
+  emit_bytes("\x48\x99", 2); // cqo (extend rax to rdx:rax)
+  emit_bytes("\x48\xf7\xf9",
+             3); // idiv rcx (rdx:rax / rcx, quotient to rax, remainder to rdx)
 }
 
 static void emit_rem_u(void) {
@@ -218,13 +209,9 @@ static void emit_shr_s(void) {
   emit_bytes("\x48\xd3\xf8", 3); // sar rax, rcl
 }
 
-static void emit_not(void) {
-  emit_bytes("\x48\xf7\xd0", 3);
-}
+static void emit_not(void) { emit_bytes("\x48\xf7\xd0", 3); }
 
-static void emit_neg(void) {
-  emit_bytes("\x48\xf7\xd8", 3);
-}
+static void emit_neg(void) { emit_bytes("\x48\xf7\xd8", 3); }
 
 static void emit_zext_8(void) {
   // This is actually 'movzx eax,al'.
@@ -348,26 +335,26 @@ static void _emit_ret(void) { emit_u8(0xc3); }
 static void emit_jmp(Label *label) {
   // jmp rel32
   emit_bytes("\xe9\x00\x00\x00\x00", 5);
-  label_add_ref(label, LABEL_CODE);
+  label_add_ref(label);
 }
 
 static void emit_jz(Label *label) {
   _emit_tst_rax_rax();
   // jz rel32
   emit_bytes("\x0f\x84\x00\x00\x00\x00", 6);
-  label_add_ref(label, LABEL_CODE);
+  label_add_ref(label);
 }
 
 static void emit_jnz(Label *label) {
   _emit_tst_rax_rax();
   // jnz rel32
   emit_bytes("\x0f\x85\x00\x00\x00\x00", 6);
-  label_add_ref(label, LABEL_CODE);
+  label_add_ref(label);
 }
 
 static void emit_lea_pc_rel(Label *label) {
   emit_bytes("\x48\x8d\x05\x00\x00\x00\x00", 7);
-  label_add_ref(label, LABEL_CODE);
+  label_add_ref(label);
 }
 
 static void emit_lea_fp_rel(int offset) {
@@ -413,6 +400,11 @@ static void emit_mov_fp_sp(void) { emit_bytes("\x48\x89\xe5", 3); }
 static void emit_mov_sp_fp(void) { emit_bytes("\x48\x89\xec", 3); }
 static void emit_mov_r1_sp(void) { emit_bytes("\x48\x89\xe1", 3); }
 
+static void emit_add_sp_imm(int imm32) {
+  emit_bytes("\x48\x81\xc4", 3);
+  emit_i32(imm32);
+}
+
 static void emit_sub_sp_imm(int imm32) {
   emit_bytes("\x48\x81\xec", 3);
   emit_i32(imm32);
@@ -421,7 +413,9 @@ static void emit_sub_sp_imm(int imm32) {
 static void emit_enter(int frame_size) {
   emit_push_fp();
   emit_mov_fp_sp();
-  emit_sub_sp_imm(frame_size);
+  if (frame_size) {
+    emit_sub_sp_imm(frame_size);
+  }
 }
 
 static void emit_leave(void) {
@@ -430,14 +424,7 @@ static void emit_leave(void) {
   _emit_ret();
 }
 
-static void emit_add_sp_imm(int imm32) {
-  emit_bytes("\x48\x81\xc4", 3);
-  emit_i32(imm32);
-}
-
-static void emit_breakpoint(void) {
-  emit_bytes("\xcc", 1);
-}
+static void emit_breakpoint(void) { emit_bytes("\xcc", 1); }
 
 static void gen_memcpy(int size) {
   // dst=rcx, src=rax.
@@ -544,9 +531,7 @@ static void gen_is_ne_zero(Type *ty) {
   }
 }
 
-static void gen_lvar_addr(Obj *var) {
-  emit_lea_fp_rel(var->offset);
-}
+static void gen_lvar_addr(Obj *var) { emit_lea_fp_rel(var->offset); }
 
 // Compute the absolute address of a given node.
 // It's an error if a given node does not reside in memory.
@@ -686,7 +671,56 @@ static void store(Type *ty) {
   }
 }
 
-static void cast(Type *from, Type *to) {
+static void gen_integer_cast(Type *ty) {
+  int size;
+
+  switch (ty->kind) {
+  case TY_BOOL:
+  case TY_CHAR:
+  case TY_SHORT:
+  case TY_INT:
+  case TY_ENUM:
+  case TY_LONG:
+  case TY_LONGLONG:
+    size = ty->size;
+    break;
+  default:
+    size = PTR_SIZE;
+    break;
+  }
+
+  if (ty->is_unsigned) {
+    switch (size) {
+    case 1:
+      emit_zext_8();
+      break;
+    case 2:
+      emit_zext_16();
+      break;
+    case 4:
+      emit_zext_32();
+      break;
+    default:
+      break;
+    }
+  } else {
+    switch (size) {
+    case 1:
+      emit_sext_8();
+      break;
+    case 2:
+      emit_sext_16();
+      break;
+    case 4:
+      emit_sext_32();
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+static void gen_cast(Type *from, Type *to) {
   if (to->kind == TY_VOID) {
     return;
   }
@@ -703,53 +737,7 @@ static void cast(Type *from, Type *to) {
     error("casts to floating point types unsupported");
   }
 
-  int to_size;
-  switch (to->kind) {
-  case TY_BOOL:
-  case TY_CHAR:
-  case TY_SHORT:
-  case TY_INT:
-  case TY_ENUM:
-  case TY_LONG:
-  case TY_LONGLONG:
-    to_size = to->size;
-    break;
-  default:
-    to_size = PTR_SIZE;
-    break;
-  }
-
-  // Truncate to target size first.
-  switch (to_size) {
-  case 1:
-    emit_zext_8();
-    break;
-  case 2:
-    emit_zext_16();
-    break;
-  case 4:
-    emit_zext_32();
-    break;
-  default:
-    break;
-  }
-
-  // Sign extend if target is a signed type.
-  if (!to->is_unsigned) {
-    switch (to_size) {
-    case 1:
-      emit_sext_8();
-      break;
-    case 2:
-      emit_sext_16();
-      break;
-    case 4:
-      emit_sext_32();
-      break;
-    default:
-      break;
-    }
-  }
+  gen_integer_cast(to);
 }
 
 // Recursive function to push args in right-to-left order.
@@ -855,7 +843,7 @@ static void gen_expr(Node *node) {
     return;
   case ND_CAST:
     gen_expr(node->lhs);
-    cast(node->lhs->ty, node->ty);
+    gen_cast(node->lhs->ty, node->ty);
     return;
   case ND_MEMZERO:
     // Node is always a local var.
@@ -865,8 +853,8 @@ static void gen_expr(Node *node) {
     return;
   case ND_COND: {
     // Ternary expression.
-    Label *else_label = new_label(LABEL_CODE);
-    Label *end_label = new_label(LABEL_CODE);
+    Label *else_label = new_label();
+    Label *end_label = new_label();
     gen_expr(node->cond);
     gen_is_ne_zero(node->cond->ty);
     emit_jz(else_label);
@@ -888,7 +876,7 @@ static void gen_expr(Node *node) {
   case ND_LOGAND: {
     // Logical AND with short-circuit. Skip the RHS expression if the LHS is
     // false.
-    Label *end_label = new_label(LABEL_CODE);
+    Label *end_label = new_label();
     gen_expr(node->lhs);
     gen_is_ne_zero(node->lhs->ty);
     emit_jz(end_label);
@@ -900,7 +888,7 @@ static void gen_expr(Node *node) {
   case ND_LOGOR: {
     // Logical OR with short-circuit. Skip the RHS expression if the LHS is
     // true.
-    Label *end_label = new_label(LABEL_CODE);
+    Label *end_label = new_label();
     gen_expr(node->lhs);
     gen_is_ne_zero(node->lhs->ty);
     emit_jnz(end_label);
@@ -952,7 +940,14 @@ static void gen_expr(Node *node) {
     emit_call();
 
     // Drop args.
-    emit_add_sp_imm(arg_count * 8);
+    emit_add_sp_imm(arg_count * PTR_SIZE);
+
+    // If there is a mismatch in the declared and defined return type may
+    // need to cast the return value.
+    // For example, if there is a `int f(void) { return 512; }` defined in one
+    // file, but another declares it as `bool f(void)` we SHOULD truncate the
+    // int to a bool, even though the actual function code returns an int.
+    gen_integer_cast(node->ty);
 
     // If the function returns a struct get the address of the local var it is
     // stored in.
@@ -1145,8 +1140,8 @@ static void gen_expr(Node *node) {
 static void gen_stmt(Node *node) {
   switch (node->kind) {
   case ND_IF: {
-    Label *else_label = new_label(LABEL_CODE);
-    Label *end_label = new_label(LABEL_CODE);
+    Label *else_label = new_label();
+    Label *end_label = new_label();
 
     gen_expr(node->cond);
     gen_is_ne_zero(node->cond->ty);
@@ -1163,9 +1158,9 @@ static void gen_stmt(Node *node) {
     return;
   }
   case ND_FOR: {
-    Label *cond_label = new_label(LABEL_CODE);
-    Label *inc_label = new_label(LABEL_CODE);
-    Label *end_label = new_label(LABEL_CODE);
+    Label *cond_label = new_label();
+    Label *inc_label = new_label();
+    Label *end_label = new_label();
 
     if (node->init) {
       gen_stmt(node->init);
@@ -1194,9 +1189,9 @@ static void gen_stmt(Node *node) {
     return;
   }
   case ND_DO: {
-    Label *start_label = new_label(LABEL_CODE);
-    Label *cond_label = new_label(LABEL_CODE);
-    Label *end_label = new_label(LABEL_CODE);
+    Label *start_label = new_label();
+    Label *cond_label = new_label();
+    Label *end_label = new_label();
 
     label_set_dest(start_label);
     if (node->then) {
@@ -1220,9 +1215,11 @@ static void gen_stmt(Node *node) {
     gen_expr(node->cond);
     emit_mov_r1_r0();
 
+    Label *end_label = new_label();
+
     // Generate branches to case labels.
     for (Node *nd = node->case_next; nd; nd = nd->case_next) {
-      nd->case_label = new_label(LABEL_CODE);
+      nd->case_label = new_label();
       if (nd->begin == nd->end) {
         // Normal single integer case.
         emit_mov_r0_imm(nd->begin);
@@ -1240,12 +1237,13 @@ static void gen_stmt(Node *node) {
       emit_jnz(nd->case_label);
     }
 
-    Label *end_label = new_label(LABEL_CODE);
-
     if (node->default_case) {
-      node->default_case->case_label = new_label(LABEL_CODE);
+      node->default_case->case_label = new_label();
       emit_jmp(node->default_case->case_label);
     }
+
+    // If none of the cases match then jump past the switch body.
+    emit_jmp(end_label);
 
     Label *prev_break_label = current_break_label;
     current_break_label = end_label;
@@ -1285,7 +1283,6 @@ static void gen_stmt(Node *node) {
     return;
   }
   case ND_GOTO: {
-    node->goto_label = new_label(LABEL_CODE);
     emit_jmp(node->goto_label);
     return;
   }
@@ -1304,14 +1301,16 @@ static void gen_stmt(Node *node) {
       Type *ty = node->lhs->ty;
       bool returns_struct = (ty->kind == TY_STRUCT) || (ty->kind == TY_UNION);
       if (returns_struct) {
-        // Structure returns are written to the buffer pointed to by the first
-        // param (the hidden first param is inserted by the parser).
+        // Structure returns should be written to the buffer pointed to by the first
+        // param (a hidden param inserted by the parser).
         Obj *ret_buffer_var = current_fn->params;
+        Type *return_ty = current_fn->ty->return_ty;
         gen_lvar_addr(ret_buffer_var);
+        emit_load_u64();
         emit_push_r0();
-        gen_addr(node->lhs);
+        gen_expr(node->lhs);
         emit_pop_r1();
-        gen_memcpy(ty->size);
+        gen_memcpy(return_ty->size);
         emit_mov_r0_imm(0);
       } else {
         gen_expr(node->lhs);
@@ -1367,9 +1366,9 @@ static void resolve_names(Prog *progs) {
         continue;
       }
       if (var->is_function) {
-        var->label = new_label(LABEL_CODE);
+        var->label = new_label();
       } else {
-        var->label = new_label(LABEL_DATA);
+        var->label = new_label();
       }
     }
   }
@@ -1396,6 +1395,8 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
                                    int *data_memsz) {
   // Calculate offsets of global vars with initialization data.
   int offset = 0;
+
+  // First process vars with init data.
   for (Prog *prog = progs; prog; prog = prog->next) {
     for (Obj *var = prog->obj; var; var = var->next) {
       if (var->is_function || !var->is_definition || !var->init_data) {
@@ -1406,6 +1407,8 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
       offset += var->ty->size;
     }
   }
+
+  // Then process vars without init data.
   offset = align_to(offset, 16);
   *data_filesz = offset;
   // Then calculate offsets for global vars without initialization data.
@@ -1423,122 +1426,114 @@ static void calculate_gvar_offsets(Prog *progs, int *data_filesz,
   *data_memsz = offset;
 }
 
-static void emit_funcs(Obj *prog_obj) {
-  for (Obj *fn = prog_obj; fn; fn = fn->next) {
-    if (!fn->is_function || !fn->is_live || !fn->is_definition) {
+static void emit_func(Obj *fn) {
+  current_fn = fn;
+  current_return_label = new_label();
+
+  // The last pushed param resides at fp+16.
+  // Params are added right-to-left so this is the first param.
+  int top = 16;
+  int bottom = 0;
+
+  // Assign offsets to pass-by-stack parameters.
+  for (Obj *var = fn->params; var; var = var->next) {
+    var->offset = top;
+    top = align_to(top + var->ty->size, 8);
+  }
+
+  // Create stack space and assign local offsets for all locals (including
+  // named local vars, function params, and anon locals created by the
+  // parser).
+  for (Obj *var = fn->locals; var; var = var->next) {
+    if (var->offset) {
       continue;
     }
+    bottom = align_to(bottom + var->ty->size, var->align);
+    var->offset = -bottom;
+  }
 
-    current_fn = fn;
-    current_return_label = new_label(LABEL_CODE);
+  int frame_size = align_to(bottom, 16);
 
-    // Type *return_ty = fn->ty->return_ty;
-    // bool returns_struct =
-    //     (return_ty->kind == TY_STRUCT || return_ty->kind == TY_UNION);
+  // Set label destination.
+  label_set_dest(fn->label);
 
-    // The last pushed param resides at fp+16.
-    // Params are added right-to-left so this is the first param.
-    int top = 16;
-    int bottom = 0;
+  // Function prologue.
+  // The 'enter' instruction does roughly:
+  //   push fp
+  //   mov fp, sp
+  //   sub sp, frame_size
+  emit_enter(frame_size);
 
-    // Assign offsets to pass-by-stack parameters.
-    for (Obj *var = fn->params; var; var = var->next) {
-      var->offset = top;
-      top = align_to(top + var->ty->size, 8);
+  // For variadic functions need to initialize the hidden __va_area__ local
+  // var.
+  if (fn->va_area) {
+    // Store address of first variadic arg at __va_area__[0].arg_area.
+    gen_lvar_addr(fn->va_area);
+    emit_mov_r1_r0();
+    emit_lea_fp_rel(top);
+    emit_store_u64();
+  }
+
+  // Create label for each label node, and add that label to each goto node
+  // that refers to the label.
+  // TODO : Could move this to resolve_goto_labels in the parser.
+  for (Node *label_nd = fn->labels; label_nd;
+        label_nd = label_nd->goto_next) {
+    if (label_nd->goto_label == NULL) {
+      label_nd->goto_label = new_label();
     }
+    for (Node *goto_nd = fn->gotos; goto_nd; goto_nd = goto_nd->goto_next) {
+      if (!strcmp(goto_nd->label, label_nd->label)) {
+        goto_nd->goto_label = label_nd->goto_label;
+      }
+    }
+  }
 
-    // Create stack space and assign local offsets for all locals (including
-    // named local vars, function params, and anon locals created by the
-    // parser).
-    for (Obj *var = fn->locals; var; var = var->next) {
-      if (var->offset) {
+  // Emit function body.
+  gen_stmt(fn->body);
+
+  if (strcmp(fn->name, "main") == 0) {
+    // [https://www.sigbus.info/n1570#5.1.2.2.3p1] The C spec defines
+    // a special rule for the main function. Reaching the end of the
+    // main function is equivalent to returning 0, even though the
+    // behavior is undefined for the other functions.
+    emit_mov_r0_imm(0);
+  }
+
+  label_set_dest(current_return_label);
+
+  // Emit function epilogue.
+  //   mov sp, fp
+  //   pop fp
+  //   ret
+  emit_leave();
+
+  fn->label->size = current_offset - fn->label->offset;
+
+  current_fn = NULL;
+  current_return_label = NULL;
+}
+
+static void emit_code(Prog *progs) {
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *fn = prog->obj; fn; fn = fn->next) {
+      if (!fn->is_function || !fn->is_live || !fn->is_definition) {
         continue;
       }
-      bottom = align_to(bottom + var->ty->size, var->align);
-      var->offset = -bottom;
+      emit_func(fn);
     }
-
-    int frame_size = align_to(bottom, 16);
-
-    // Set label destination.
-    label_set_dest(fn->label);
-
-    // Function prologue.
-    // The 'enter' instruction does roughly:
-    //   push fp
-    //   mov fp, sp
-    //   sub sp, frame_size
-    emit_enter(frame_size);
-
-    // For variadic functions need to initialize the hidden __va_area__ local var.
-    if (fn->va_area) {
-      // Store address of first variadic arg at __va_area__[0].
-      gen_lvar_addr(fn->va_area);
-      emit_mov_r1_r0();
-      emit_lea_fp_rel(top);
-      emit_store_u64();
-    }
-
-    // Create label for each label node, and add that label to each goto node
-    // that refers to the label.
-    // TODO : Could move this to resolve_goto_labels in the parser.
-    for (Node *label_nd = fn->labels; label_nd;
-         label_nd = label_nd->goto_next) {
-      if (label_nd->goto_label == NULL) {
-        label_nd->goto_label = new_label(LABEL_CODE);
-      }
-      for (Node *goto_nd = fn->gotos; goto_nd; goto_nd = goto_nd->goto_next) {
-        if (!strcmp(goto_nd->label, label_nd->label)) {
-          goto_nd->goto_label = label_nd->goto_label;
-        }
-      }
-    }
-
-    // Emit function body.
-    gen_stmt(fn->body);
-
-    if (strcmp(fn->name, "main") == 0) {
-      // [https://www.sigbus.info/n1570#5.1.2.2.3p1] The C spec defines
-      // a special rule for the main function. Reaching the end of the
-      // main function is equivalent to returning 0, even though the
-      // behavior is undefined for the other functions.
-      emit_mov_r0_imm(0);
-    }
-
-    label_set_dest(current_return_label);
-
-    // Emit function epilogue.
-    //   mov sp, fp
-    //   pop fp
-    //   ret
-    emit_leave();
-
-    fn->label->size = current_offset - fn->label->offset;
-
-    current_fn = NULL;
-    current_return_label = NULL;
   }
 }
 
-static void emit_data(Obj *prog_obj) {
-  for (Obj *var = prog_obj; var; var = var->next) {
-    if (var->is_function || !var->is_definition || !var->init_data) {
-      continue;
-    }
-    int pos = 0;
-    Relocation *rel = var->rel;
-    while (pos < var->ty->size) {
-      if (rel && rel->offset == pos) {
-        // Data-to-data or data-to-code reference.
-        // TODO : Needs runtime fixup.
-        int64_t rel_var_offset = rel->var->label->offset + rel->addend;
-        emit_i64(rel_var_offset);
-        rel = rel->next;
-        pos += 8;
-      } else {
-        emit_u8(var->init_data[pos] & 0xff);
-        pos += 1;
+static void emit_data(Prog *progs) {
+  for (Prog *prog = progs; prog; prog = prog->next) {
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (var->is_function || !var->is_definition || !var->init_data) {
+        continue;
       }
+      int var_offset = align_to(current_offset, var->align);
+      emit_zeroes(var_offset - current_offset);
+      emit_bytes(var->init_data, var->ty->size);
     }
   }
 }
@@ -1591,16 +1586,56 @@ void codegen(Prog *progs, ByteArray *out) {
 
   resolve_names(progs);
 
+  // Calculate offsets of vars in the data segment.
   int data_filesz = 0;
   int data_memsz = 0;
   calculate_gvar_offsets(progs, &data_filesz, &data_memsz);
 
+  // Emit code segment.
+  emit_code(progs);
+
+  int entry_point_offset = current_offset;
+  
+  // Emit relocation handlers.
+  // These fix up data-to-code and data-to-data references at runtime.
+  Label *data_start_label = new_label();
+  emit_mov_fp_sp();
   for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_funcs(prog->obj);
+    for (Obj *var = prog->obj; var; var = var->next) {
+      if (var->is_function || !var->is_definition || !var->init_data || !var->rel) {
+        continue;
+      }
+      for (Relocation *rel = var->rel; rel; rel = rel->next) {
+        // Get the address of the pointer we need to fix up.
+        emit_lea_pc_rel(var->label);
+        emit_mov_r1_imm(rel->offset);
+        emit_add();
+        emit_push_r0();
+        // Get the target address.
+        emit_lea_pc_rel(rel->var->label);
+        emit_mov_r1_imm(rel->addend);
+        emit_add();
+        // Fix up.
+        emit_pop_r1();
+        emit_store_u64();
+      }
+    }
   }
+  emit_mov_sp_fp();
+
+  // Find '_start' function and jump to it.
+  Obj *start_func = find_exported_obj(progs, "_start");
+  if (start_func == NULL || !start_func->is_function) {
+    error("failed to find _start function");
+  }
+  emit_jmp(start_func->label);
 
   int text_filesz = align_to(current_offset, SEG_ALIGN);
   emit_zeroes(text_filesz - current_offset);
+
+  int data_offset = current_offset;
+  int data_end_offset = current_offset + data_filesz;
+  label_set_dest(data_start_label);
 
   // Set label offsets for global vars now that we know the text segment size.
   for (Prog *prog = progs; prog; prog = prog->next) {
@@ -1612,13 +1647,8 @@ void codegen(Prog *progs, ByteArray *out) {
     }
   }
 
-  // TODO : emit runtime relocation handlers for data-to-data and data-to-code
-  //   references.
-  int data_offset = current_offset;
-  int data_end_offset = current_offset + data_filesz;
-  for (Prog *prog = progs; prog; prog = prog->next) {
-    emit_data(prog->obj);
-  }
+  // Emit data segment.
+  emit_data(progs);
 
   if (current_offset > data_end_offset) {
     error("data segment larger than expected");
@@ -1636,14 +1666,8 @@ void codegen(Prog *progs, ByteArray *out) {
     }
   }
 
-  // Find entry point (_start).
-  Obj *start_func = find_exported_obj(progs, "_start");
-  if (start_func == NULL || !start_func->is_function) {
-    error("failed to find _start function");
-  }
-
-  // Emit section header table.
-  // This is purely so we can have a symbol table for debugging.
+  // Emit section headers.
+  // This is purely so we can have a symbols for debugging.
   // Section headers can be entirely omitted.
 
   // Emit .symtab.
@@ -1687,13 +1711,14 @@ void codegen(Prog *progs, ByteArray *out) {
           emit_i64(var->label->size);            // st_size
         } else {
           int bind = var->is_static ? 0x0 : 0x1; // STB_LOCAL or STB_GLOBAL
-          int sec = (var->init_data && !var->is_static) ? 2 : 3; // .data or .bss
-          emit_i32(str_offset);                  // st_name
-          emit_u8((bind << 4) | 0x1);            // st_info: STT_OBJECT
-          emit_u8(0);                            // st_other
-          emit_i16(sec);                         // st_shndx
-          emit_i64(var->label->offset);          // st_value
-          emit_i64(var->ty->size);               // st_size
+          int sec =
+              (var->init_data && !var->is_static) ? 2 : 3; // .data or .bss
+          emit_i32(str_offset);                            // st_name
+          emit_u8((bind << 4) | 0x1);   // st_info: STT_OBJECT
+          emit_u8(0);                   // st_other
+          emit_i16(sec);                // st_shndx
+          emit_i64(var->label->offset); // st_value
+          emit_i64(var->ty->size);      // st_size
         }
         str_offset += strlen(var->name) + 1;
         symtab_count += 1;
@@ -1737,7 +1762,8 @@ void codegen(Prog *progs, ByteArray *out) {
 
   // Emit .shstrtab (section name table).
   int shstrtab_offset = current_offset;
-  const char *shstrtab = "\x00.text\x00.data\x00.bss\x00.symtab\x00.strtab\x00.shstrtab\x00";
+  const char *shstrtab =
+      "\x00.text\x00.data\x00.bss\x00.symtab\x00.strtab\x00.shstrtab\x00";
   emit_bytes(shstrtab, 1 + 6 + 6 + 5 + 8 + 8 + 10);
   int shstrtab_len = current_offset - shstrtab_offset;
 
@@ -1749,74 +1775,74 @@ void codegen(Prog *progs, ByteArray *out) {
   // SHT_NULL (index 0)
   emit_zeroes(SHENTSIZE);
   // .text (index 1)
-  emit_i32(1);                         // sh_name
-  emit_i32(1);                         // sh_type = SHT_PROGBITS
-  emit_i64(6);                         // sh_flags = SHF_ALLOC
-  emit_i64(0);                         // sh_addr
-  emit_i64(0);                         // sh_offset
-  emit_i64(text_filesz);               // sh_size
-  emit_i32(0);                         // sh_link
-  emit_i32(0);                         // sh_info
-  emit_i64(8);                         // sh_addralign
-  emit_i64(0);                         // sh_entsize
+  emit_i32(1);           // sh_name
+  emit_i32(1);           // sh_type = SHT_PROGBITS
+  emit_i64(6);           // sh_flags = SHF_ALLOC
+  emit_i64(0);           // sh_addr
+  emit_i64(0);           // sh_offset
+  emit_i64(text_filesz); // sh_size
+  emit_i32(0);           // sh_link
+  emit_i32(0);           // sh_info
+  emit_i64(8);           // sh_addralign
+  emit_i64(0);           // sh_entsize
   // .data (index 2)
-  emit_i32(1 + 6);                     // sh_name
-  emit_i32(1);                         // sh_type = SHT_PROGBITS
-  emit_i64(3);                         // sh_flags = SHF_ALLOC | SHF_WRITE
-  emit_i64(data_offset);               // sh_addr
-  emit_i64(data_offset);               // sh_offset
-  emit_i64(data_filesz);               // sh_size
-  emit_i32(0);                         // sh_link
-  emit_i32(0);                         // sh_info
-  emit_i64(8);                         // sh_addralign
-  emit_i64(0);                         // sh_entsize
+  emit_i32(1 + 6);       // sh_name
+  emit_i32(1);           // sh_type = SHT_PROGBITS
+  emit_i64(3);           // sh_flags = SHF_ALLOC | SHF_WRITE
+  emit_i64(data_offset); // sh_addr
+  emit_i64(data_offset); // sh_offset
+  emit_i64(data_filesz); // sh_size
+  emit_i32(0);           // sh_link
+  emit_i32(0);           // sh_info
+  emit_i64(8);           // sh_addralign
+  emit_i64(0);           // sh_entsize
   // .bss (index 3)
-  emit_i32(1 + 6 + 6);                 // sh_name
-  emit_i32(8);                         // sh_type = SHT_NOBITS
-  emit_i64(3);                         // sh_flags = SHF_ALLOC | SHF_WRITE
-  emit_i64(bss_offset);                // sh_addr
-  emit_i64(bss_offset);                // sh_offset
-  emit_i64(bss_size);                  // sh_size
-  emit_i32(0);                         // sh_link
-  emit_i32(0);                         // sh_info
-  emit_i64(8);                         // sh_addralign
-  emit_i64(0);                         // sh_entsize
+  emit_i32(1 + 6 + 6);  // sh_name
+  emit_i32(8);          // sh_type = SHT_NOBITS
+  emit_i64(3);          // sh_flags = SHF_ALLOC | SHF_WRITE
+  emit_i64(bss_offset); // sh_addr
+  emit_i64(bss_offset); // sh_offset
+  emit_i64(bss_size);   // sh_size
+  emit_i32(0);          // sh_link
+  emit_i32(0);          // sh_info
+  emit_i64(8);          // sh_addralign
+  emit_i64(0);          // sh_entsize
   // .symtab (index 4)
-  emit_i32(1 + 6 + 6 + 5);             // sh_name
-  emit_i32(2);                         // sh_type = SHT_SYMTAB
-  emit_i64(0);                         // sh_flags
-  emit_i64(0);                         // sh_addr
-  emit_i64(symtab_offset);             // sh_offset
-  emit_i64(symtab_len);                // sh_size
-  emit_i32(5);                         // sh_link -> .strtab
-  emit_i32(first_local_sym);           // sh_info
-  emit_i64(8);                         // sh_addralign
-  emit_i64(24);                        // sh_entsize = sizeof(Elf64_Sym)
+  emit_i32(1 + 6 + 6 + 5);   // sh_name
+  emit_i32(2);               // sh_type = SHT_SYMTAB
+  emit_i64(0);               // sh_flags
+  emit_i64(0);               // sh_addr
+  emit_i64(symtab_offset);   // sh_offset
+  emit_i64(symtab_len);      // sh_size
+  emit_i32(5);               // sh_link -> .strtab
+  emit_i32(first_local_sym); // sh_info
+  emit_i64(8);               // sh_addralign
+  emit_i64(24);              // sh_entsize = sizeof(Elf64_Sym)
   // .strtab (index 5)
-  emit_i32(1 + 6 + 6 + 5 + 8);         // sh_name
-  emit_i32(3);                         // sh_type = SHT_STRTAB
-  emit_i64(0);                         // sh_flags
-  emit_i64(0);                         // sh_addr
-  emit_i64(strtab_offset);             // sh_offset
-  emit_i64(strtab_len);                // sh_size
-  emit_i32(0);                         // sh_link
-  emit_i32(0);                         // sh_info
-  emit_i64(1);                         // sh_addralign
-  emit_i64(0);                         // sh_entsize
+  emit_i32(1 + 6 + 6 + 5 + 8); // sh_name
+  emit_i32(3);                 // sh_type = SHT_STRTAB
+  emit_i64(0);                 // sh_flags
+  emit_i64(0);                 // sh_addr
+  emit_i64(strtab_offset);     // sh_offset
+  emit_i64(strtab_len);        // sh_size
+  emit_i32(0);                 // sh_link
+  emit_i32(0);                 // sh_info
+  emit_i64(1);                 // sh_addralign
+  emit_i64(0);                 // sh_entsize
   // .shstrtab (index 6)
-  emit_i32(1 + 6 + 6 + 5 + 8 + 8);     // sh_name
-  emit_i32(3);                         // sh_type = SHT_STRTAB
-  emit_i64(0);                         // sh_flags
-  emit_i64(0);                         // sh_addr
-  emit_i64(shstrtab_offset);           // sh_offset
-  emit_i64(shstrtab_len);              // sh_size
-  emit_i32(0);                         // sh_link
-  emit_i32(0);                         // sh_info
-  emit_i64(1);                         // sh_addralign
-  emit_i64(0);                         // sh_entsize
+  emit_i32(1 + 6 + 6 + 5 + 8 + 8); // sh_name
+  emit_i32(3);                     // sh_type = SHT_STRTAB
+  emit_i64(0);                     // sh_flags
+  emit_i64(0);                     // sh_addr
+  emit_i64(shstrtab_offset);       // sh_offset
+  emit_i64(shstrtab_len);          // sh_size
+  emit_i32(0);                     // sh_link
+  emit_i32(0);                     // sh_info
+  emit_i64(1);                     // sh_addralign
+  emit_i64(0);                     // sh_entsize
 
   // Fix up ELF file header and program headers.
-  patch_i64(24, start_func->label->offset);        // e_entry
+  patch_i64(24, entry_point_offset);               // e_entry
   patch_i64(40, sh_offset);                        // e_shoff
   patch_i64(EHSIZE + 32, text_filesz);             // text p_filesz
   patch_i64(EHSIZE + 40, text_filesz);             // text p_memsz

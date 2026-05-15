@@ -41,10 +41,20 @@ test_early: $(EARLY_TESTS)
 
 build/test/%.exe: test/%.c chibicc
 	ASAN_OPTIONS="detect_leaks=0" \
-	./chibicc -Itest -o build/test/$*.exe $< test/common.c libc/libc.c
+	./chibicc -Itest -DTEST_NAME='"$<"' -o build/test/$*.exe \
+	  $< test/common.c libc/libc.c
 
 test: $(TESTS)
-	for i in $^; do echo $$i; ./$$i || exit 1; echo; done
+	fail=0; \
+	for i in $^; do \
+	  if ! ./$$i ; then \
+	    fail=$$((fail + 1)); \
+	  fi; \
+	done; \
+	if [[ $$fail -ne 0 ]]; then \
+	  echo "$$fail tests failed"; \
+	  exit 1; \
+	fi
 	test/driver.sh ./chibicc
 
 # test-all: test test-stage2

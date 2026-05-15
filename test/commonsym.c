@@ -10,12 +10,11 @@ int common_ext1;
 extern int common_ext2;
 static int common_local;
 
-int main() {
+int test_main() {
   ASSERT(5, x);
   ASSERT(7, y);
   ASSERT(0, common_ext1);
   ASSERT(3, common_ext2);
 
-  printf("OK\n");
   return 0;
 }

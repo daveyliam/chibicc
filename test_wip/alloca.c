@@ -3,7 +3,7 @@
 
 void *fn(int x, void *p, int y) { return p; }
 
-int main() {
+int test_main() {
   int i = 0;
 
   char *p1 = alloca(16);
@@ -25,6 +25,5 @@ int main() {
   ASSERT(0, memcmp(p2, "ghijklmnopqrstuv", 16));
   ASSERT(0, memcmp(p3, "wxy", 3));
 
-  printf("OK\n");
   return 0;
 }

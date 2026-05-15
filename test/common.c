@@ -2,13 +2,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void assert(int expected, int actual, char *code) {
-  if (expected == actual) {
-    printf("%s => %d\n", code, actual);
-  } else {
-    printf("%s => %d expected but got %d\n", code, expected, actual);
+#ifndef TEST_NAME
+# define TEST_NAME "<unknown>"
+#endif
+
+void assert(int expected, int actual, const char *code) {
+  if (expected != actual) {
+    printf(TEST_NAME ": FAIL: %s => %d expected but got %d\n", code, expected, actual);
     exit(1);
   }
+}
+
+int test_main(void);
+
+int main() {
+  int r = test_main();
+  printf(TEST_NAME ": OK\n");
+  return r;
 }
 
 static int static_fn() { return 5; }

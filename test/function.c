@@ -210,7 +210,7 @@ static inline int inline_fn(void) {
 //   return x;
 // }
 
-int main() {
+int test_main() {
   ASSERT(3, ret3());
   ASSERT(8, add2(3, 5));
   ASSERT(2, sub2(5, 3));
@@ -287,10 +287,10 @@ int main() {
 
   ASSERT(3, param_decay2(ret3));
 
-  ASSERT(5, sizeof(__func__));
-  ASSERT(0, strcmp("main", __func__));
+  ASSERT(0, strcmp("test_main", __func__));
+  ASSERT(10, sizeof(__func__));
   ASSERT(0, strcmp("func_fn", func_fn()));
-  ASSERT(0, strcmp("main", __FUNCTION__));
+  ASSERT(0, strcmp("test_main", __FUNCTION__));
   ASSERT(0, strcmp("function_fn", function_fn()));
 
 
@@ -403,5 +403,4 @@ int main() {
   // ASSERT(1, to_ldouble(5.0) == 5.0);
   // ASSERT(0, to_ldouble(5.0) == 5.2);
 
-  printf("OK\n");
-}
+  }

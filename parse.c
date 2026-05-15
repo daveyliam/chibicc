@@ -1145,17 +1145,18 @@ static int count_array_init_elements(Token *tok, Type *ty) {
 static void array_initializer1(Token **rest, Token *tok, Initializer *init) {
   tok = skip(tok, "{");
 
+  // Duplicated code?
+  // if (init->is_flexible) {
+  //   int len = count_array_init_elements(tok, init->ty);
+  //   *init = *new_initializer(array_of(init->ty->base, len), false);
+  // }
+
   if (init->is_flexible) {
     int len = count_array_init_elements(tok, init->ty);
     *init = *new_initializer(array_of(init->ty->base, len), false);
   }
 
   bool first = true;
-
-  if (init->is_flexible) {
-    int len = count_array_init_elements(tok, init->ty);
-    *init = *new_initializer(array_of(init->ty->base, len), false);
-  }
 
   for (int i = 0; !consume_end(rest, tok); i++) {
     if (!first)
@@ -1330,23 +1331,24 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
   init->expr = assign(rest, tok);
 }
 
-static Type *copy_struct_type(Type *ty) {
-  ty = copy_type(ty);
+// static Type *copy_struct_type(Type *ty) {
+//   ty = copy_type(ty);
 
-  Member head = {};
-  Member *cur = &head;
-  for (Member *mem = ty->members; mem; mem = mem->next) {
-    Member *m = calloc(1, sizeof(Member));
-    *m = *mem;
-    cur = cur->next = m;
-  }
+//   Member head = {};
+//   Member *cur = &head;
+//   for (Member *mem = ty->members; mem; mem = mem->next) {
+//     Member *m = calloc(1, sizeof(Member));
+//     *m = *mem;
+//     cur = cur->next = m;
+//   }
 
-  ty->members = head.next;
-  return ty;
-}
+//   ty->members = head.next;
+//   return ty;
+// }
 
 static Initializer *initializer(Token **rest, Token *tok, Type *ty,
                                 Type **new_ty) {
+
   Initializer *init = new_initializer(ty, true);
   initializer2(rest, tok, init);
 
@@ -1360,19 +1362,30 @@ static Initializer *initializer(Token **rest, Token *tok, Type *ty,
   // nested flexible struct. It is also an error to initialize the flexible
   // array member of a local var.
   // TODO : Also update array_len and union variants?
-  if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->is_flexible) {
-    ty = copy_struct_type(init->ty);
+  // if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->is_flexible) {
+  //   ty = copy_struct_type(init->ty);
 
+  //   Member *mem = ty->members;
+  //   while (mem->next)
+  //     mem = mem->next;
+  //   mem->ty = init->children[mem->idx]->ty;
+  //   ty->size += mem->ty->size;
+
+  //   init->ty = ty;
+  // }
+
+  return init;
+}
+
+static int get_init_size(Initializer *init) {
+  Type *ty = init->ty;
+  if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->is_flexible) {
     Member *mem = ty->members;
     while (mem->next)
       mem = mem->next;
-    mem->ty = init->children[mem->idx]->ty;
-    ty->size += mem->ty->size;
-
-    init->ty = ty;
+    return ty->size + init->children[mem->idx]->ty->size;
   }
-
-  return init;
+  return ty->size;
 }
 
 static Node *init_desg_expr(InitDesg *desg, Token *tok) {
@@ -1500,6 +1513,9 @@ static Relocation *write_gvar_data(Relocation *cur, Initializer *init, Type *ty,
         uint64_t mask = (1L << mem->bit_width) - 1;
         uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
         write_buf(loc, combined, mem->ty->size);
+      } else if (ty->is_flexible && mem->next == NULL) {
+        cur = write_gvar_data(cur, init->children[mem->idx], init->children[mem->idx]->ty, buf,
+                              offset + mem->offset);
       } else {
         cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
                               offset + mem->offset);
@@ -1559,7 +1575,7 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
   Initializer *init = initializer(rest, tok, var->ty, &var->ty);
 
   Relocation head = {};
-  char *buf = calloc(1, var->ty->size);
+  char *buf = calloc(1, get_init_size(init));
   write_gvar_data(&head, init, var->ty, buf, 0);
   var->init_data = buf;
   var->rel = head.next;
@@ -1912,27 +1928,11 @@ static int64_t eval2(Node *node, Obj **gvar) {
   case ND_ADD: {
     int64_t lhs = eval2(node->lhs, gvar);
     int64_t rhs = eval(node->rhs);
-    if (node->lhs->ty->base) {
-      // ptr + int
-      return lhs + (rhs * node->lhs->ty->base->size);
-    }
     return lhs + rhs;
   }
   case ND_SUB: {
     int64_t lhs = eval2(node->lhs, gvar);
     int64_t rhs = eval(node->rhs);
-    if (node->lhs->ty->base) {
-      if (node->rhs->ty->base) {
-        // ptr - ptr
-        // XXX : does this even work? can only have one gvar, but maybe for
-        // absolute pointers? e.g. offsetof uses (type*)0 to calculate member
-        // offsets.
-        return (lhs - rhs) / node->lhs->ty->base->size;
-      } else {
-        // ptr - int
-        return lhs - (rhs * node->lhs->ty->base->size);
-      }
-    }
     return lhs - rhs;
   }
   case ND_MUL:

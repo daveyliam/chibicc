@@ -7,7 +7,7 @@ inline int inline_fn(void) {
   return 3;
 }
 
-int main() {
+int test_main() {
   ASSERT(5, ext1);
   ASSERT(5, *ext2);
 
@@ -20,6 +20,5 @@ int main() {
   extern int ext_fn2(int x);
   ASSERT(8, ext_fn2(8));
 
-  printf("OK\n");
   return 0;
 }

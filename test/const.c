@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   // Clang: error: type specifier missing, defaults to 'int'; ISO C99 and later
   // do not support implicit int [-Wimplicit-int]
   // { const x; }
@@ -13,6 +13,5 @@ int main() {
   ASSERT(5, ({ const int x = 5; x; }));
   ASSERT(8, ({ const int x = 8; int *const y=&x; *y; }));
   ASSERT(6, ({ const int x = 6; *(const int * const)&x; }));
-  printf("OK\n");
   return 0;
 }

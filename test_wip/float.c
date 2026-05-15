@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(35, (float)(char)35);
   ASSERT(35, (float)(short)35);
   ASSERT(35, (float)(int)35);
@@ -89,6 +89,5 @@ int main() {
   ASSERT(5, 0.0 ? 3 : 5);
   ASSERT(3, 1.2 ? 3 : 5);
 
-  printf("OK\n");
   return 0;
 }

@@ -6,7 +6,6 @@
 #include <stddef.h>
 #include <stdnoreturn.h>
 
-int main() {
-  printf("OK\n");
+int test_main() {
   return 0;
 }

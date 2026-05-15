@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
 #line 500 "foo"
   ASSERT(501, __LINE__);
   ASSERT(0, strcmp(__FILE__, "foo"));
@@ -18,6 +18,5 @@ int main() {
   ASSERT(201, __LINE__);
   ASSERT(0, strcmp(__FILE__, "xyz"));
 
-  printf("OK\n");
   return 0;
 }

@@ -1,6 +1,6 @@
 #include "test.h"
 
-int main() {
+int test_main() {
   ASSERT(8, ({ union { int a; char b[6]; } x; sizeof(x); }));
   ASSERT(3, ({ union { int a; char b[4]; } x; x.a = 515; x.b[0]; }));
   ASSERT(2, ({ union { int a; char b[4]; } x; x.a = 515; x.b[1]; }));
@@ -18,6 +18,5 @@ int main() {
   ASSERT(3, ({struct { union { int a,b; }; union { int c,d; }; } x; x.a=3; x.b; }));
   ASSERT(5, ({struct { union { int a,b; }; union { int c,d; }; } x; x.d=5; x.c; }));
 
-  printf("OK\n");
   return 0;
 }

@@ -16,7 +16,7 @@ Tree *tree = &(Tree){
   0
 };
 
-int main() {
+int test_main() {
   ASSERT(1, (int){1});
   ASSERT(2, ((int[]){0,1,2})[2]);
   ASSERT('a', ((struct {char a; int b;}){'a', 3}).a);
@@ -28,6 +28,5 @@ int main() {
   ASSERT(3, tree->lhs->lhs->val);
   ASSERT(4, tree->lhs->rhs->val);
 
-  printf("OK\n");
   return 0;
 }

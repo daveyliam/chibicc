@@ -41,7 +41,7 @@ T65 g66 = {'f','o','o','b','a','r',0};
 
 unsigned long g67 = (unsigned long)(((T65*)0)->b);
 
-int main() {
+int test_main() {
   ASSERT(1, ({ int x[3]={1,2,3}; x[0]; }));
   ASSERT(2, ({ int x[3]={1,2,3}; x[1]; }));
   ASSERT(3, ({ int x[3]={1,2,3}; x[2]; }));
@@ -181,13 +181,15 @@ int main() {
   ASSERT(3, sizeof(g60));
   ASSERT(6, sizeof(g61));
 
-  // This does not match clang behaviour.
-  // Flexible array members are always treated as if they have a size of 0,
+  // Original chibicc tests changed to match clang behaviour.
+  // Flexible array members in clang are treated as if they have a size of 0,
   // even if we know the actual size from a static initializer.
   // ASSERT(4, sizeof(g65));
   // ASSERT(7, sizeof(g66));
   ASSERT(1, sizeof(g65));
   ASSERT(1, sizeof(g66));
+  ASSERT(1, (long)(&g65 + 2) - (long)(&g65 + 1));
+  ASSERT(2, (long)(&g66 + 3) - (long)(&g66 + 1));
   ASSERT(0, strcmp(g65.b, "oo"));
   ASSERT(0, strcmp(g66.b, "oobar"));
 
@@ -214,19 +216,6 @@ int main() {
 
   ASSERT(10, ({ char x[]={[10-3]=1,2,3}; sizeof(x); }));
   ASSERT(20, ({ char x[][2]={[8][1]=1,2}; sizeof(x); }));
-
-  ASSERT(3, sizeof(g60));
-  ASSERT(6, sizeof(g61));
-
-  // This does not match clang behaviour.
-  // Flexible array members are always treated as if they have a size of 0,
-  // even if we know the actual size from a static initializer.
-  // ASSERT(4, sizeof(g65));
-  // ASSERT(7, sizeof(g66));
-  ASSERT(1, sizeof(g65));
-  ASSERT(1, sizeof(g66));
-  ASSERT(0, strcmp(g65.b, "oo"));
-  ASSERT(0, strcmp(g66.b, "oobar"));
 
   ASSERT(7, ((int[10]){ [3] 7 })[3]);
   ASSERT(0, ((int[10]){ [3] 7 })[4]);
@@ -277,6 +266,5 @@ int main() {
 
   ASSERT(1, g67);
 
-  printf("OK\n");
   return 0;
 }

@@ -3,7 +3,7 @@
 int g1, g2[4];
 static int g3 = 3;
 
-int main() {
+int test_main() {
   ASSERT(3, ({ int a; a=3; a; }));
   ASSERT(3, ({ int a=3; a; }));
   ASSERT(8, ({ int a=3; int z=5; a+z; }));
@@ -69,6 +69,5 @@ int main() {
 
   ASSERT(3, g3);
 
-  printf("OK\n");
   return 0;
 }

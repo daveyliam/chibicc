@@ -7,7 +7,7 @@ int g4;
 long g5;
 char g6;
 
-int main() {
+int test_main() {
   ASSERT(1, _Alignof(char));
   ASSERT(2, _Alignof(short));
   ASSERT(4, _Alignof(int));
@@ -45,6 +45,5 @@ int main() {
   // ASSERT(0, ({ char x[100]; (unsigned long)&x % 16; }));
   // ASSERT(0, ({ char x[101]; (unsigned long)&x % 16; }));
 
-  printf("OK\n");
   return 0;
 }
