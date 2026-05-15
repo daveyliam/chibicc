@@ -132,7 +132,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr);
 static void array_initializer2(Token **rest, Token *tok, Initializer *init, int i);
 static void struct_initializer2(Token **rest, Token *tok, Initializer *init, Member *mem);
 static void initializer2(Token **rest, Token *tok, Initializer *init);
-static Initializer *initializer(Token **rest, Token *tok, Type *ty, Type **new_ty);
+static Initializer *initializer(Token **rest, Token *tok, Type *ty);
 static Node *lvar_initializer(Token **rest, Token *tok, Obj *var);
 static void gvar_initializer(Token **rest, Token *tok, Obj *var);
 static Node *compound_stmt(Token **rest, Token *tok);
@@ -1373,47 +1373,10 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
   init->expr = assign(rest, tok);
 }
 
-// static Type *copy_struct_type(Type *ty) {
-//   ty = copy_type(ty);
-
-//   Member head = {};
-//   Member *cur = &head;
-//   for (Member *mem = ty->members; mem; mem = mem->next) {
-//     Member *m = gc_alloc(sizeof(Member));
-//     *m = *mem;
-//     cur = cur->next = m;
-//   }
-
-//   ty->members = head.next;
-//   return ty;
-// }
-
-static Initializer *initializer(Token **rest, Token *tok, Type *ty, Type **new_ty) {
+static Initializer *initializer(Token **rest, Token *tok, Type *ty) {
 
   Initializer *init = new_initializer(ty, true);
   initializer2(rest, tok, init);
-
-  *new_ty = init->ty;
-
-  // If a struct or union type ends with a flexibly sized array then we need to
-  // convert it to a fixed size type. Note that this only affects the type of
-  // variable this initializer is for. Each variable will get its own separate
-  // resolved type. Also note that for structs only the last member can be a
-  // flexible array. It is also an error to try to initialize a struct with a
-  // nested flexible struct. It is also an error to initialize the flexible
-  // array member of a local var.
-  // TODO : Also update array_len and union variants?
-  // if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->is_flexible) {
-  //   ty = copy_struct_type(init->ty);
-
-  //   Member *mem = ty->members;
-  //   while (mem->next)
-  //     mem = mem->next;
-  //   mem->ty = init->children[mem->idx]->ty;
-  //   ty->size += mem->ty->size;
-
-  //   init->ty = ty;
-  // }
 
   return init;
 }
@@ -1493,7 +1456,10 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
 //   x[1][0] = 8;
 //   x[1][1] = 9;
 static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
-  Initializer *init = initializer(rest, tok, var->ty, &var->ty);
+  Initializer *init = initializer(rest, tok, var->ty);
+  // Update the var type to reflect the initialized type with flexibly
+  // sized arrays set to their actual size for this var.
+  var->ty = init->ty;
   InitDesg desg = {NULL, 0, NULL, var};
 
   // If a partial initializer list is given, the standard requires
@@ -1564,9 +1530,10 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
         write_buf(loc, combined, mem->ty->size);
       } else if (ty->is_flexible && mem->next == NULL) {
         // Note that for structs only the last member can be a
-        // flexible array. It is also an error to try to initialize a struct
-        // with a nested flexible struct. It is also an error to initialize the
-        // flexible array member of a local var.
+        // flexible array.
+        // It is an error to try to initialize a struct with a nested flexible
+        // struct. It is also an error to initialize the flexible array member
+        // of a local var.
         cur = write_gvar_data(cur, init_mem, init_mem->ty, buf, offset + mem->offset);
       } else {
         cur = write_gvar_data(cur, init_mem, mem->ty, buf, offset + mem->offset);
@@ -1617,14 +1584,22 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
 // objects to a flat byte array. It is a compile error if an
 // initializer list contains a non-constant expression.
 static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
-  // initializer() updates the type of var if it contains flexible arrays.
-  // Essentially a new type will be created with all flexible arrays (and the
-  // containing struct) converted to a fixed size. This is correct, as for all
-  // purposes it IS a new type and can't be converted to a different version of
-  // the type with differently sized arrays. Also note that all types that make
-  // it to the codegen are fixed size, flexibly sized types are only a concern
-  // for the parser.
-  Initializer *init = initializer(rest, tok, var->ty, &var->ty);
+  // initializer(), apart from creating the Initializer structure describing
+  // the parsed initializer, also updates the type of var if it contains
+  // flexible arrays.
+  // Essentially a new type will be created with all flexible arrays converted
+  // to a fixed size. This is correct, as for all purposes it IS a new type and
+  // can't be converted to a different version of the type with differently
+  // sized arrays.
+  // Also note that all types that make it to the codegen are fixed size,
+  // flexibly sized types are only a concern for the parser.
+  // Also note that structs with flexible array members do NOT have their type
+  // size updated, the flexible array member is treated as having a length of
+  // zero.
+  Initializer *init = initializer(rest, tok, var->ty);
+  // Update the var type to reflect the initialized type with flexibly
+  // sized arrays set to their actual size for this var.
+  var->ty = init->ty;
 
   Relocation head = {};
   int init_data_size = get_init_size(init);
