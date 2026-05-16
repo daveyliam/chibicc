@@ -1,6 +1,22 @@
 # chibicc: A Small C Compiler
 
-## WASM Codegen (WIP)
+## Native x86-64 Codegen
+
+* Changed the code generator to produce native x86-64 ELF files directly
+  (rather than producing assembly text).
+* Added a basic libc implementation with just enough functionality to
+  run the compiler.
+* Lots of limitations, and a few regressions from rui314/chibicc:
+  - Floating point support is disabled.
+  - Struct bitfields no longer work.
+  - Thread Local Storage no longer works.
+  - Atomics no longer work.
+  - Probably other things too.
+* However, it can still self-bootstrap, and now uses no external code
+  to do so. It does not need an assembler, linker, or libc anymore.
+* Can probably fix all the regressions with a bit of work, but i've reached
+  my initial goal of self-bootstrapping without an external toolchain, so
+  doubt I will do that work myself.
 
 ## README from rui314/chibicc
 
