@@ -114,7 +114,9 @@ static bool is_cont_valid;
 static Node *current_switch;
 
 static Obj *builtin_alloca;
+static Obj *builtin_get_fp;
 static Obj *builtin_syscall3;
+static Obj *builtin_syscall6;
 
 static int anon_gvar_id_next = 0;
 static int anon_string_literal_id_next = 0;
@@ -145,7 +147,7 @@ static int64_t eval_rval(Node *node, Obj **gvar);
 static bool is_const_expr(Node *node);
 static Node *assign(Token **rest, Token *tok);
 static Node *logor(Token **rest, Token *tok);
-static double eval_double(Node *node);
+// static double eval_double(Node *node);
 static Node *conditional(Token **rest, Token *tok);
 static Node *logand(Token **rest, Token *tok);
 static Node *bitor(Token **rest, Token *tok);
@@ -605,13 +607,13 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     case UNSIGNED + LONG + LONG + INT:
       ty = ty_ulonglong;
       break;
-    case FLOAT:
-      ty = ty_float;
-      break;
-    case DOUBLE:
-    case LONG + DOUBLE:
-      ty = ty_double;
-      break;
+    // case FLOAT:
+    //   ty = ty_float;
+    //   break;
+    // case DOUBLE:
+    // case LONG + DOUBLE:
+    //   ty = ty_double;
+    //   break;
     default:
       error_tok(tok, "invalid type");
     }
@@ -1553,15 +1555,15 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
     return cur;
   }
 
-  if (ty->kind == TY_FLOAT) {
-    *(float *)(buf + offset) = eval_double(init->expr);
-    return cur;
-  }
+  // if (ty->kind == TY_FLOAT) {
+  //   *(float *)(buf + offset) = eval_double(init->expr);
+  //   return cur;
+  // }
 
-  if (ty->kind == TY_DOUBLE) {
-    *(double *)(buf + offset) = eval_double(init->expr);
-    return cur;
-  }
+  // if (ty->kind == TY_DOUBLE) {
+  //   *(double *)(buf + offset) = eval_double(init->expr);
+  //   return cur;
+  // }
 
   Obj *gvar = NULL;
   uint64_t val = eval2(init->expr, &gvar);
@@ -1962,9 +1964,9 @@ static int64_t eval(Node *node) { return eval2(node, NULL); }
 static int64_t eval2(Node *node, Obj **gvar) {
   add_type(node);
 
-  if (is_flonum(node->ty)) {
-    return eval_double(node);
-  }
+  // if (is_flonum(node->ty)) {
+  //   return eval_double(node);
+  // }
 
   switch (node->kind) {
   case ND_ADD: {
@@ -2158,50 +2160,50 @@ int64_t const_expr(Token **rest, Token *tok) {
   return eval(node);
 }
 
-static double eval_double(Node *node) {
-  add_type(node);
+// static double eval_double(Node *node) {
+//   add_type(node);
 
-  if (is_integer(node->ty)) {
-    if (node->ty->is_unsigned) {
-      return (unsigned long)eval(node);
-    }
-    return eval(node);
-  }
+//   if (is_integer(node->ty)) {
+//     if (node->ty->is_unsigned) {
+//       return (unsigned long)eval(node);
+//     }
+//     return eval(node);
+//   }
 
-  switch (node->kind) {
-  case ND_ADD:
-    return eval_double(node->lhs) + eval_double(node->rhs);
-  case ND_SUB:
-    return eval_double(node->lhs) - eval_double(node->rhs);
-  case ND_MUL:
-    return eval_double(node->lhs) * eval_double(node->rhs);
-  case ND_DIV: {
-    double lhs = eval_double(node->lhs);
-    double rhs = eval_double(node->rhs);
-    if (rhs == 0.0) {
-      error_tok(node->tok, "floating point division by zero in constant expression");
-    }
-    return lhs / rhs;
-  }
-  case ND_NEG:
-    return -eval_double(node->lhs);
-  case ND_COND:
-    return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
-  case ND_COMMA:
-    return eval_double(node->rhs);
-  case ND_CAST:
-    if (is_flonum(node->lhs->ty)) {
-      return eval_double(node->lhs);
-    }
-    return eval(node->lhs);
-  case ND_NUM:
-    return node->fval;
-  default:
-    break;
-  }
+//   switch (node->kind) {
+//   case ND_ADD:
+//     return eval_double(node->lhs) + eval_double(node->rhs);
+//   case ND_SUB:
+//     return eval_double(node->lhs) - eval_double(node->rhs);
+//   case ND_MUL:
+//     return eval_double(node->lhs) * eval_double(node->rhs);
+//   case ND_DIV: {
+//     double lhs = eval_double(node->lhs);
+//     double rhs = eval_double(node->rhs);
+//     if (rhs == 0.0) {
+//       error_tok(node->tok, "floating point division by zero in constant expression");
+//     }
+//     return lhs / rhs;
+//   }
+//   case ND_NEG:
+//     return -eval_double(node->lhs);
+//   case ND_COND:
+//     return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
+//   case ND_COMMA:
+//     return eval_double(node->rhs);
+//   case ND_CAST:
+//     if (is_flonum(node->lhs->ty)) {
+//       return eval_double(node->lhs);
+//     }
+//     return eval(node->lhs);
+//   case ND_NUM:
+//     return node->fval;
+//   default:
+//     break;
+//   }
 
-  error_tok(node->tok, "not a compile-time constant");
-}
+//   error_tok(node->tok, "not a compile-time constant");
+// }
 
 // Convert op= operators to expressions containing an assignment.
 //
@@ -3114,12 +3116,13 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
         arg = new_cast(arg, param_ty);
       }
       param_ty = param_ty->next;
-    } else if (arg->ty->kind == TY_FLOAT) {
-      // If parameter type is omitted (e.g. in "..."), float
-      // arguments are promoted to double.
-      // TODO : is this target specific behaviour?
-      arg = new_cast(arg, ty_double);
     }
+    // else if (arg->ty->kind == TY_FLOAT) {
+    //   // If parameter type is omitted (e.g. in "..."), float
+    //   // arguments are promoted to double.
+    //   // TODO : is this target specific behaviour?
+    //   arg = new_cast(arg, ty_double);
+    // }
 
     cur = cur->next = arg;
   }
@@ -3283,9 +3286,9 @@ static Node *primary(Token **rest, Token *tok) {
     if (is_integer(ty) || ty->kind == TY_PTR) {
       return new_num(0, start);
     }
-    if (is_flonum(ty)) {
-      return new_num(1, start);
-    }
+    // if (is_flonum(ty)) {
+    //   return new_num(1, start);
+    // }
     return new_num(2, start);
   }
 
@@ -3355,12 +3358,13 @@ static Node *primary(Token **rest, Token *tok) {
 
   if (tok->kind == TK_NUM) {
     Node *node;
-    if (is_flonum(tok->ty)) {
-      node = new_node(ND_NUM, tok);
-      node->fval = tok->fval;
-    } else {
-      node = new_num(tok->val, tok);
-    }
+    // if (is_flonum(tok->ty)) {
+    //   node = new_node(ND_NUM, tok);
+    //   node->fval = tok->fval;
+    // } else {
+    //   node = new_num(tok->val, tok);
+    // }
+    node = new_num(tok->val, tok);
 
     node->ty = tok->ty;
     *rest = tok->next;
@@ -3611,6 +3615,12 @@ static void declare_builtin_functions(void) {
   builtin_alloca->is_definition = false;
   builtin_alloca->is_builtin = true;
 
+  Type *get_fp_ty = func_type(pointer_to(ty_void));
+  get_fp_ty->params = NULL;
+  builtin_get_fp = new_gvar("__builtin_get_fp", get_fp_ty);
+  builtin_get_fp->is_definition = false;
+  builtin_get_fp->is_builtin = true;
+
   Type *syscall3_ty = func_type(ty_long);
   syscall3_ty->params = copy_type(ty_long);
   syscall3_ty->params->next = copy_type(ty_long);
@@ -3619,6 +3629,16 @@ static void declare_builtin_functions(void) {
   builtin_syscall3 = new_gvar("__builtin_syscall3", syscall3_ty);
   builtin_syscall3->is_definition = false;
   builtin_syscall3->is_builtin = true;
+
+  Type *syscall6_ty = func_type(ty_long);
+  Type **params = &syscall6_ty->params;
+  for (int i = 0; i < 7; i++) {
+    *params = copy_type(ty_long);
+    params = &(*params)->next;
+  }
+  builtin_syscall6 = new_gvar("__builtin_syscall6", syscall6_ty);
+  builtin_syscall6->is_definition = false;
+  builtin_syscall6->is_builtin = true;
 }
 
 // program = (typedef | function-definition | global-variable)*

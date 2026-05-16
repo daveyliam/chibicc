@@ -36,7 +36,7 @@ void strarray_free(StringArray *arr, bool should_free_elems) {
 }
 
 // Takes a printf-style format string and returns a formatted string.
-char *format(char *fmt, ...) {
+char *format(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   int n = vsnprintf(NULL, 0, fmt, ap);
@@ -54,6 +54,29 @@ char *format(char *fmt, ...) {
   va_end(ap);
 
   return buf;
+}
+
+char *dirname2(const char *s) {
+  if (s == NULL || *s == 0) {
+    return gc_strdup(".");
+  }
+  int i = strlen(s) - 1;
+  for (; s[i] == '/'; i--) {
+    if (i == 0) {
+      return gc_strdup("/");
+    }
+  }
+  for (; s[i] != '/'; i--) {
+    if (i == 0) {
+      return gc_strdup(".");
+    }
+  }
+  for (; s[i] == '/'; i--) {
+    if (i == 0) {
+      return gc_strdup("/");
+    }
+  }
+  return gc_strndup(s, i + 1);
 }
 
 void bytearray_append(ByteArray *arr, uint8_t b) {

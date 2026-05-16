@@ -5,7 +5,7 @@ typedef struct {
   int a;
   char b;
   int c;
-  double d;
+  long long d;
 } T;
 
 int test_main() {

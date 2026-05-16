@@ -29,10 +29,10 @@ static bool take_arg(char *arg) {
 static void add_default_include_paths(char *argv0) {
   // We expect that chibicc-specific include files are installed
   // to ./include relative to argv[0].
-  char *argv0_copy = gc_strdup(argv0);
-  char *path = format("%s/include", dirname(argv0_copy));
+  char *d = dirname2(argv0);
+  char *path = format("%s/include", d);
+  gc_free(d);
   strarray_push(&include_paths, path);
-  gc_free(argv0_copy);
 }
 
 static void define(char *str) {
@@ -143,14 +143,15 @@ static void parse_args(int argc, char **argv) {
 
 // Returns true if a given file exists.
 bool file_exists(char *path) {
-  struct stat st;
-  return !stat(path, &st);
+  int fd = openat(AT_FDCWD, path, O_RDONLY, 0);
+  close(fd);
+  return fd >= 0;
 }
 
 static Token *must_tokenize_file(char *path) {
   Token *tok = tokenize_file(path);
   if (!tok) {
-    error("%s: %s", path, strerror(errno));
+    error("%s: no such file", path);
   }
   return tok;
 }
@@ -192,7 +193,7 @@ static Obj *cc1(void) {
     } else {
       path = search_include_paths(incl);
       if (!path) {
-        error("-include: %s: %s", incl, strerror(errno));
+        error("-include: %s: no such file", incl);
       }
     }
 
@@ -208,19 +209,19 @@ static Obj *cc1(void) {
   return parse(tok);
 }
 
-static FILE *open_file(const char *path) {
+static int open_output_file(const char *path, int mode) {
   if (!path || strcmp(path, "-") == 0) {
-    return stdout;
+    return 1;
   }
 
-  FILE *out = fopen(path, "w");
-  if (!out) {
-    error("cannot open output file: %s: %s", path, strerror(errno));
+  int fd = openat(AT_FDCWD, path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+  if (fd < 0) {
+    error("cannot open output file: %s", path);
   }
-  return out;
+  return fd;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv, char **envp) {
   parse_args(argc, argv);
 
   Prog progs_head = {};
@@ -267,12 +268,12 @@ int main(int argc, char **argv) {
     prog = prog_next;
   }
 
-  // Write codegen output to output file.
+  // Write codegen output to stdout or output file.
   const char *out_path = opt_o ? opt_o : "a.out";
-  FILE *out = open_file(out_path);
-  fwrite(buf.data, buf.len, 1, out);
-  fclose(out);
-  chmod(out_path, 0755);
+  int fd = open_output_file(out_path, 0755);
+  write(fd, buf.data, buf.len);
+  close(fd);
+  fchmodat(AT_FDCWD, out_path, 0755, 0);
 
   bytearray_free(&buf);
 

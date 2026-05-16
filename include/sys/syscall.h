@@ -8,6 +8,7 @@
 #  define SYS_mmap 9
 #  define SYS_exit 60
 #  define SYS_openat 257
+#  define SYS_fchmodat 268
 #elif defined(__aarch64__) || defined(__arm64__)
 #  define SYS_read 63
 #  define SYS_write 64

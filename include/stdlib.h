@@ -7,5 +7,6 @@ void *malloc(size_t size);
 void free(void *p);
 void *calloc(size_t n, size_t size);
 _Noreturn void exit(int status);
+unsigned long strtoul(const char *nptr, char **endptr, int base);
 
 #endif

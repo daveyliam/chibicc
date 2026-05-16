@@ -528,7 +528,11 @@ static Token *stringize(Token *hash, Token *arg) {
 // Concatenate two tokens to create a new token.
 static Token *paste(Token *lhs, Token *rhs) {
   // Paste the two tokens.
-  char *buf = format("%.*s%.*s", lhs->len, lhs->loc, rhs->len, rhs->loc);
+  ByteArray arr = {};
+  bytearray_extend(&arr, (uint8_t *)lhs->loc, lhs->len);
+  bytearray_extend(&arr, (uint8_t *)rhs->loc, rhs->len);
+  bytearray_append(&arr, 0);
+  char *buf = (char *)arr.data;
 
   // Tokenize the resulting string.
   Token *tok = tokenize(new_file(lhs->file->name, lhs->file->file_no, buf));
@@ -865,7 +869,7 @@ static Token *include_file(Token *tok, char *path, Token *filename_tok) {
 
   Token *tok2 = tokenize_file(path);
   if (!tok2) {
-    error_tok(filename_tok, "%s: cannot open file: %s", path, strerror(errno));
+    error_tok(filename_tok, "%s: cannot open file", path);
   }
 
   guard_name = detect_include_guard(tok2);
@@ -926,9 +930,9 @@ static Token *preprocess2(Token *tok) {
       char *filename = read_include_filename(&tok, tok->next, &is_dquote);
 
       if (filename[0] != '/' && is_dquote) {
-        char *start_file_name = gc_strdup(start->file->name);
-        char *path = format("%s/%s", dirname(start_file_name), filename);
-        gc_free(start_file_name);
+        char *d = dirname2(start->file->name);
+        char *path = format("%s/%s", d, filename);
+        gc_free(d);
         if (file_exists(path)) {
           tok = include_file(tok, path, start->next->next);
           continue;
@@ -1101,33 +1105,12 @@ static Token *counter_macro(Token *tmpl) { return new_num_token(counter_macro_id
 // __TIMESTAMP__ is expanded to a string describing the last
 // modification time of the current file. E.g.
 // "Fri Jul 24 01:32:50 2020"
+// We do not support it.
 static Token *timestamp_macro(Token *tmpl) {
-  struct stat st;
-  if (stat(tmpl->file->name, &st) != 0) {
-    return new_str_token("??? ??? ?? ??:??:?? ????", tmpl);
-  }
-
-  char buf[30];
-  ctime_r(&st.st_mtime, buf);
-  buf[24] = '\0';
-  return new_str_token(buf, tmpl);
+  return new_str_token("??? ??? ?? ??:??:?? ????", tmpl);
 }
 
 static Token *base_file_macro(Token *tmpl) { return new_str_token(base_file, tmpl); }
-
-// __DATE__ is expanded to the current date, e.g. "May 17 2020".
-static char *format_date(struct tm *tm) {
-  static char mon[][4] = {
-      "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  };
-
-  return format("\"%s %2d %d\"", mon[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
-}
-
-// __TIME__ is expanded to the current time, e.g. "13:34:03".
-static char *format_time(struct tm *tm) {
-  return format("\"%02d:%02d:%02d\"", tm->tm_hour, tm->tm_min, tm->tm_sec);
-}
 
 void init_macros(void) {
   // Define predefined macros
@@ -1178,10 +1161,8 @@ void init_macros(void) {
   add_builtin("__TIMESTAMP__", timestamp_macro);
   add_builtin("__BASE_FILE__", base_file_macro);
 
-  time_t now = time(NULL);
-  struct tm *tm = localtime(&now);
-  define_macro("__DATE__", format_date(tm));
-  define_macro("__TIME__", format_time(tm));
+  define_macro("__DATE__", "\"??? ?? ????\"");
+  define_macro("__TIME__", "\"??:??:??\"");
 }
 
 typedef enum {

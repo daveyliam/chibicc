@@ -1,6 +1,11 @@
 #ifndef __STDINT_H
 #define __STDINT_H
 
+#define SIZE_MAX (0xffffffffffffffffUL)
+
+#define INT32_MAX (0x7fffffff)
+#define INT32_MIN (-INT32_MAX - 1)
+
 typedef char int8_t;
 typedef short int16_t;
 typedef int int32_t;

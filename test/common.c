@@ -15,7 +15,7 @@ void assert(int expected, int actual, const char *code) {
 
 int test_main(void);
 
-int main() {
+int main(int argc, char **argv, char **envp) {
   int r = test_main();
   printf(TEST_NAME ": OK\n");
   return r;

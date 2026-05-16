@@ -1,4 +1,5 @@
 #include "chibicc.h"
+#include <fcntl.h>
 
 // Input file
 static File *current_file;
@@ -40,15 +41,18 @@ static void verror_at(char *filename, char *input, int line_no, char *loc, char 
 
   // Print out the line.
   int indent = fprintf(stderr, "%s:%d: ", filename, line_no);
-  fprintf(stderr, "%.*s\n", (int)(end - line), line);
+  write(2, line, (size_t)(end - line));
+  fputs("\n", stderr);
 
   // Show the error message.
   int pos = display_width(line, loc - line) + indent;
 
-  fprintf(stderr, "%*s", pos, ""); // print pos spaces.
-  fprintf(stderr, "^ ");
+  for (int i = 0; i < pos; i++) {
+    fputs(" ", stderr);
+  }
+  fputs("^ ", stderr);
   vfprintf(stderr, fmt, ap);
-  fprintf(stderr, "\n");
+  fputs("\n", stderr);
 }
 
 void error_at(char *loc, char *fmt, ...) {
@@ -395,10 +399,10 @@ static bool convert_pp_int(Token *tok) {
 
   // Read a binary, octal, decimal or hexadecimal number.
   int base = 10;
-  if (!strncasecmp(p, "0x", 2) && isxdigit(p[2])) {
+  if ((startswith(p, "0x") || startswith(p, "0X")) && isxdigit(p[2])) {
     p += 2;
     base = 16;
-  } else if (!strncasecmp(p, "0b", 2) && (p[2] == '0' || p[2] == '1')) {
+  } else if ((startswith(p, "0b") || startswith(p, "0B")) && (p[2] == '0' || p[2] == '1')) {
     p += 2;
     base = 2;
   } else if (*p == '0') {
@@ -416,7 +420,10 @@ static bool convert_pp_int(Token *tok) {
       startswith(p, "uLL") || startswith(p, "ull")) {
     p += 3;
     l = u = true;
-  } else if (!strncasecmp(p, "lu", 2) || !strncasecmp(p, "ul", 2)) {
+  } else if (
+      startswith(p, "lu") || startswith(p, "lU") || startswith(p, "Lu") || startswith(p, "LU") ||
+      startswith(p, "ul") || startswith(p, "uL") || startswith(p, "Ul") || startswith(p, "UL")
+  ) {
     p += 2;
     l = u = true;
   } else if (startswith(p, "LL") || startswith(p, "ll")) {
@@ -482,29 +489,30 @@ static void convert_pp_number(Token *tok) {
   if (convert_pp_int(tok)) {
     return;
   }
+  error_tok(tok, "invalid numeric constant");
 
-  // If it's not an integer, it must be a floating point constant.
-  char *end;
-  double val = strtod(tok->loc, &end);
+  // // If it's not an integer, it must be a floating point constant.
+  // char *end;
+  // double val = strtod(tok->loc, &end);
 
-  Type *ty;
-  if (*end == 'f' || *end == 'F') {
-    ty = ty_float;
-    end++;
-  } else if (*end == 'l' || *end == 'L') {
-    ty = ty_double;
-    end++;
-  } else {
-    ty = ty_double;
-  }
+  // Type *ty;
+  // if (*end == 'f' || *end == 'F') {
+  //   ty = ty_float;
+  //   end++;
+  // } else if (*end == 'l' || *end == 'L') {
+  //   ty = ty_double;
+  //   end++;
+  // } else {
+  //   ty = ty_double;
+  // }
 
-  if (tok->loc + tok->len != end) {
-    error_tok(tok, "invalid numeric constant");
-  }
+  // if (tok->loc + tok->len != end) {
+  //   error_tok(tok, "invalid numeric constant");
+  // }
 
-  tok->kind = TK_NUM;
-  tok->fval = val;
-  tok->ty = ty;
+  // tok->kind = TK_NUM;
+  // tok->fval = val;
+  // tok->ty = ty;
 }
 
 void convert_pp_tokens(Token *tok) {
@@ -699,14 +707,14 @@ Token *tokenize(File *file) {
 
 // Returns the contents of a given file.
 static char *read_file(char *path) {
-  FILE *fp;
+  int fd;
 
   if (strcmp(path, "-") == 0) {
     // By convention, read from stdin if a given filename is "-".
-    fp = stdin;
+    fd = 0;
   } else {
-    fp = fopen(path, "r");
-    if (!fp) {
+    fd = openat(AT_FDCWD, path, O_RDONLY, 0);
+    if (fd < 0) {
       return NULL;
     }
   }
@@ -716,15 +724,15 @@ static char *read_file(char *path) {
   // Read the entire file.
   for (;;) {
     char buf2[4096];
-    int n = fread(buf2, 1, sizeof(buf2), fp);
+    int n = read(fd, buf2, sizeof(buf2));
     if (n == 0) {
       break;
     }
     bytearray_extend(&arr, (uint8_t *)buf2, n);
   }
 
-  if (fp != stdin) {
-    fclose(fp);
+  if (fd != 1) {
+    close(fd);
   }
 
   // Make sure that the last line is properly terminated with '\n'.

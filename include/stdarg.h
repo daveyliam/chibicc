@@ -8,13 +8,15 @@ typedef struct {
 typedef __va_elem va_list[1];
 
 #define va_start(ap, last) \
-  do { *(ap) = *(__va_elem *)__va_area__; } while (0)
+  do { \
+    *(ap) = *(__va_elem *)__va_area__; \
+  } while (0)
 
 #define va_end(ap)
 
 void *__va_arg(__va_elem *ap, int sz, int align);
 
-#define va_arg(ap, ty) (*(ty *) __va_arg(ap, sizeof(ty), _Alignof(ty)))
+#define va_arg(ap, ty) (*(ty *)__va_arg(ap, sizeof(ty), _Alignof(ty)))
 
 #define va_copy(dest, src) ((dest)[0] = (src)[0])
 

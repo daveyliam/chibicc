@@ -15,8 +15,8 @@ Type *ty_uint = &(Type){TY_INT, 4, 4, true};
 Type *ty_ulong = &(Type){TY_LONG, 8, 8, true};
 Type *ty_ulonglong = &(Type){TY_LONGLONG, 8, 8, true};
 
-Type *ty_float = &(Type){TY_FLOAT, 4, 4};
-Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
+// Type *ty_float = &(Type){TY_FLOAT, 4, 4};
+// Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = gc_alloc(sizeof(Type));
@@ -32,9 +32,11 @@ bool is_integer(Type *ty) {
          k == TY_LONGLONG || k == TY_ENUM;
 }
 
-bool is_flonum(Type *ty) { return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE; }
+// bool is_flonum(Type *ty) { return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE; }
 
-bool is_numeric(Type *ty) { return is_integer(ty) || is_flonum(ty); }
+// bool is_numeric(Type *ty) { return is_integer(ty) || is_flonum(ty); }
+
+bool is_numeric(Type *ty) { return is_integer(ty); }
 
 bool is_compatible(Type *t1, Type *t2) {
   if (t1 == t2) {
@@ -60,9 +62,9 @@ bool is_compatible(Type *t1, Type *t2) {
   case TY_LONG:
   case TY_LONGLONG:
     return t1->is_unsigned == t2->is_unsigned;
-  case TY_FLOAT:
-  case TY_DOUBLE:
-    return true;
+  // case TY_FLOAT:
+  // case TY_DOUBLE:
+  //   return true;
   case TY_PTR:
     return is_compatible(t1->base, t2->base);
   case TY_FUNC: {
@@ -145,12 +147,12 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
     return pointer_to(ty2);
   }
 
-  if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE) {
-    return ty_double;
-  }
-  if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT) {
-    return ty_float;
-  }
+  // if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE) {
+  //   return ty_double;
+  // }
+  // if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT) {
+  //   return ty_float;
+  // }
 
   if (ty1->size < 4) {
     ty1 = ty_int;

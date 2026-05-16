@@ -1,9 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <ctype.h>
-#include <errno.h>
-#include <glob.h>
-#include <libgen.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -11,11 +8,9 @@
 #include <stdlib.h>
 #include <stdnoreturn.h>
 #include <string.h>
-#include <strings.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
@@ -48,7 +43,8 @@ typedef struct {
 
 void strarray_push(StringArray *arr, char *s);
 void strarray_free(StringArray *arr, bool should_free_elems);
-char *format(char *fmt, ...) __attribute__((format(printf, 1, 2)));
+char *format(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+char *dirname2(const char *path);
 
 typedef struct {
   uint8_t *data;
@@ -91,7 +87,7 @@ struct Token {
   TokenKind kind; // Token kind
   Token *next;    // Next token
   int64_t val;    // If kind is TK_NUM, its value
-  double fval;    // If kind is TK_NUM, its value
+  // double fval;    // If kind is TK_NUM, its value
   char *loc;      // Token location
   int len;        // Token length
   Type *ty;       // Used if TK_NUM or TK_STR
@@ -319,7 +315,7 @@ struct Node {
 
   // Numeric literal
   int64_t val;
-  double fval;
+  // double fval;
 };
 
 Node *new_cast(Node *expr, Type *ty);
@@ -340,8 +336,8 @@ typedef enum {
   TY_INT,
   TY_LONG,
   TY_LONGLONG,
-  TY_FLOAT,
-  TY_DOUBLE,
+  // TY_FLOAT,
+  // TY_DOUBLE,
   TY_ENUM,
   TY_PTR,
   TY_FUNC,
@@ -426,11 +422,11 @@ extern Type *ty_uint;
 extern Type *ty_ulong;
 extern Type *ty_ulonglong;
 
-extern Type *ty_float;
-extern Type *ty_double;
+// extern Type *ty_float;
+// extern Type *ty_double;
 
 bool is_integer(Type *ty);
-bool is_flonum(Type *ty);
+// bool is_flonum(Type *ty);
 bool is_numeric(Type *ty);
 bool is_compatible(Type *t1, Type *t2);
 Type *copy_type(Type *ty);
