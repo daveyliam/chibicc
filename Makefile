@@ -11,7 +11,7 @@ TESTS_STAGE2:=$(patsubst test/%.c,build/stage2/test/%.exe,$(TEST_SRCS))
 
 CC:=clang
 
-$(shell mkdir -p build/test build/stage2/test)
+$(shell mkdir -p build/test build/stage2/test build/stage3)
 
 # Stage 1
 
@@ -62,6 +62,16 @@ test-stage2: $(TESTS_STAGE2) | build/stage2/chibicc libc/libc.c
 	fi
 	test/driver.sh ./build/stage2/chibicc
 
+build/stage3/chibicc: $(SRCS) | build/stage2/chibicc libc/libc.c
+	./build/stage2/chibicc -Iinclude -o $@ libc/libc.c $^
+
+test-stage3: build/stage2/chibicc build/stage3/chibicc
+	if ! cmp -s $^ ; then \
+	  echo "files do not match: " $^ ; \
+	  exit 1; \
+	fi; \
+	echo "files match, we are self-bootstrapping!"
+
 # Misc.
 
 format:
@@ -72,4 +82,4 @@ format:
 clean:
 	rm -rf chibicc tmp* build
 
-.PHONY: test test-stage2 clean format
+.PHONY: test test-stage2 test-stage3 clean format
