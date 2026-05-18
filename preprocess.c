@@ -539,6 +539,7 @@ static Token *paste(Token *lhs, Token *rhs) {
   if (tok->next->kind != TK_EOF) {
     error_tok(lhs, "pasting forms '%s', an invalid token", buf);
   }
+  free(buf);
   return tok;
 }
 
@@ -1277,7 +1278,11 @@ Token *preprocess(Token *tok) {
   return tok;
 }
 
-void reset_preprocess(void) {
+void preprocess_init(void) {}
+
+void preprocess_destroy(void) {}
+
+void preprocess_end_unit(void) {
   hashmap_clear(&macros);
   cond_incl = NULL;
   hashmap_clear(&pragma_once);
@@ -1286,3 +1291,5 @@ void reset_preprocess(void) {
   counter_macro_id_next = 0;
   hashmap_clear(&include_guards);
 }
+
+void preprocess_begin_unit(void) { preprocess_end_unit(); }

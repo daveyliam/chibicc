@@ -71,7 +71,9 @@ typedef enum {
   TK_EOF,     // End-of-file markers
 } TokenKind;
 
-typedef struct {
+typedef struct File File;
+struct File {
+  File *next;
   char *name;
   int file_no;
   char *contents;
@@ -79,7 +81,7 @@ typedef struct {
   // For #line directive
   char *display_name;
   int line_delta;
-} File;
+};
 
 // Token type
 typedef struct Token Token;
@@ -117,7 +119,10 @@ File *new_file(char *name, int file_no, char *contents);
 Token *tokenize_string_literal(Token *tok, Type *basety);
 Token *tokenize(File *file);
 Token *tokenize_file(char *filename);
-void reset_tokenize(void);
+void tokenize_init(void);
+void tokenize_destroy(void);
+void tokenize_begin_unit(void);
+void tokenize_end_unit(void);
 
 #define unreachable() error("internal error at %s:%d", __FILE__, __LINE__)
 
@@ -130,7 +135,10 @@ void init_macros(void);
 void define_macro(char *name, char *buf);
 void undef_macro(char *name);
 Token *preprocess(Token *tok);
-void reset_preprocess(void);
+void preprocess_init(void);
+void preprocess_destroy(void);
+void preprocess_begin_unit(void);
+void preprocess_end_unit(void);
 
 //
 // parse.c
@@ -321,8 +329,11 @@ struct Node {
 Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
 Obj *parse(Token *tok);
-void reset_parse(void);
 void prog_free(Prog *prog);
+void parse_init(void);
+void parse_destroy(void);
+void parse_begin_unit(void);
+void parse_end_unit(void);
 
 //
 // type.c

@@ -12,6 +12,8 @@ static bool has_space;
 
 static int tokenize_file_no;
 
+static File *files = NULL;
+
 static HashMap keywords_map = {};
 
 // Reports an error and exit.
@@ -177,33 +179,7 @@ static int read_punct(char *p) {
   return ispunct(*p) ? 1 : 0;
 }
 
-static bool is_keyword(Token *tok) {
-  if (keywords_map.capacity == 0) {
-    static char *kw[] = {
-        "return",    "if",         "else",
-        "for",       "while",      "int",
-        "sizeof",    "char",       "struct",
-        "union",     "short",      "long",
-        "void",      "typedef",    "_Bool",
-        "enum",      "static",     "goto",
-        "break",     "continue",   "switch",
-        "case",      "default",    "extern",
-        "_Alignof",  "_Alignas",   "do",
-        "signed",    "unsigned",   "const",
-        "volatile",  "auto",       "register",
-        "restrict",  "__restrict", "__restrict__",
-        "_Noreturn", "float",      "double",
-        "typeof",    "asm",        "_Thread_local",
-        "__thread",  "_Atomic",    "__attribute__",
-    };
-
-    for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
-      hashmap_put(&keywords_map, kw[i], (void *)1);
-    }
-  }
-
-  return hashmap_get2(&keywords_map, tok->loc, tok->len);
-}
+static bool is_keyword(Token *tok) { return hashmap_get2(&keywords_map, tok->loc, tok->len); }
 
 static uint32_t read_escaped_char(char **new_pos, char *p) {
   if ('0' <= *p && *p <= '7') {
@@ -744,11 +720,13 @@ static char *read_file(char *path) {
 }
 
 File *new_file(char *name, int file_no, char *contents) {
-  File *file = gc_alloc(sizeof(File));
+  File *file = calloc(1, sizeof(File));
+  file->next = files;
+  files = file;
   file->name = name;
   file->display_name = name;
   file->file_no = file_no;
-  file->contents = contents;
+  file->contents = strdup(contents);
   return file;
 }
 
@@ -849,6 +827,8 @@ Token *tokenize_file(char *path) {
     return NULL;
   }
 
+  char *buf = p;
+
   // UTF-8 texts may start with a 3-byte "BOM" marker sequence.
   // If exists, just skip them because they are useless bytes.
   // (It is actually not recommended to add BOM markers to UTF-8
@@ -863,17 +843,53 @@ Token *tokenize_file(char *path) {
 
   // Tokens keep a reference to the file for formatting error messages.
   File *file = new_file(path, tokenize_file_no + 1, p);
+  free(buf);
   tokenize_file_no += 1;
 
   return tokenize(file);
 }
 
-void reset_tokenize(void) {
+void tokenize_init(void) {
+  static char *kw[] = {
+      "return",    "if",         "else",
+      "for",       "while",      "int",
+      "sizeof",    "char",       "struct",
+      "union",     "short",      "long",
+      "void",      "typedef",    "_Bool",
+      "enum",      "static",     "goto",
+      "break",     "continue",   "switch",
+      "case",      "default",    "extern",
+      "_Alignof",  "_Alignas",   "do",
+      "signed",    "unsigned",   "const",
+      "volatile",  "auto",       "register",
+      "restrict",  "__restrict", "__restrict__",
+      "_Noreturn", "float",      "double",
+      "typeof",    "asm",        "_Thread_local",
+      "__thread",  "_Atomic",    "__attribute__",
+  };
+  for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
+    hashmap_put(&keywords_map, kw[i], (void *)1);
+  }
+}
+
+void tokenize_destroy(void) {
+  for (File *file = files; file;) {
+    File *file_next = file->next;
+    if (file->contents != NULL) {
+      free(file->contents);
+    }
+    free(file);
+    file = file_next;
+  }
+
+  hashmap_clear(&keywords_map);
+}
+
+void tokenize_end_unit(void) {
   current_file = NULL;
   at_bol = false;
   has_space = false;
   tokenize_file_no = 0;
-  // TODO : should only call this at compiler exit, rather than after every
-  //   translation unit.
-  hashmap_clear(&keywords_map);
 }
+
+void tokenize_begin_unit(void) { tokenize_end_unit(); }

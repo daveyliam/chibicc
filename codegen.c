@@ -936,7 +936,7 @@ static void gen_expr(Node *node) {
         emit_push_r0();
         // syscall number in r0, not on stack.
         gen_expr(node->args);
-        emit_syscall(3);
+        emit_syscall(6);
         return;
       }
     }

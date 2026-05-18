@@ -224,14 +224,18 @@ static int open_output_file(const char *path, int mode) {
 int main(int argc, char **argv, char **envp) {
   parse_args(argc, argv);
 
+  tokenize_init();
+  preprocess_init();
+  parse_init();
+
   Prog progs_head = {};
   Prog *progs_tail = &progs_head;
   for (int i = 0; i < input_paths.len; i++) {
     char *input = input_paths.data[i];
 
-    reset_tokenize();
-    reset_preprocess();
-    reset_parse();
+    tokenize_begin_unit();
+    preprocess_begin_unit();
+    parse_begin_unit();
 
     base_file = input;
     init_macros();
@@ -250,11 +254,11 @@ int main(int argc, char **argv, char **envp) {
     prog->obj = obj;
     progs_tail->next = prog;
     progs_tail = prog;
-  }
 
-  reset_tokenize();
-  reset_preprocess();
-  reset_parse();
+    parse_end_unit();
+    preprocess_end_unit();
+    tokenize_end_unit();
+  }
 
   // Codegen to temporary output buffer in case we need to
   // seek and the output file is stdout.
@@ -267,6 +271,10 @@ int main(int argc, char **argv, char **envp) {
     prog_free(prog);
     prog = prog_next;
   }
+
+  parse_destroy();
+  preprocess_destroy();
+  tokenize_destroy();
 
   // Write codegen output to stdout or output file.
   const char *out_path = opt_o ? opt_o : "a.out";

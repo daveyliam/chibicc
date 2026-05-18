@@ -87,10 +87,10 @@ void bytearray_append(ByteArray *arr, uint8_t b) {
     } else {
       cap2 = arr->cap * 2;
     }
-    uint8_t *data2 = gc_alloc(cap2);
+    uint8_t *data2 = calloc(cap2, sizeof(uint8_t));
     if (arr->data != NULL) {
       memcpy(data2, arr->data, arr->len);
-      gc_free(arr->data);
+      free(arr->data);
     }
     arr->data = data2;
     arr->cap = cap2;
@@ -107,7 +107,7 @@ void bytearray_extend(ByteArray *arr, uint8_t *data, int len) {
 
 void bytearray_free(ByteArray *arr) {
   if (arr->data) {
-    gc_free(arr->data);
+    free(arr->data);
     arr->data = NULL;
   }
   arr->len = 0;

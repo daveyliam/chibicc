@@ -176,12 +176,18 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr);
 static int align_down(int n, int align) { return align_to(n - align + 1, align); }
 
 static void enter_scope(void) {
-  Scope *sc = gc_alloc(sizeof(Scope));
+  Scope *sc = calloc(1, sizeof(Scope));
   sc->next = scope;
   scope = sc;
 }
 
-static void leave_scope(void) { scope = scope->next; }
+static void leave_scope(void) {
+  Scope *sc = scope;
+  hashmap_clear(&sc->vars);
+  hashmap_clear(&sc->tags);
+  scope = sc->next;
+  free(sc);
+}
 
 // Find a variable by name.
 static VarScope *find_var(Token *tok) {
@@ -1614,20 +1620,6 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
 
 // Returns true if a given token represents a type.
 static bool is_typename(Token *tok) {
-  if (typenames_map.capacity == 0) {
-    static char *kw[] = {
-        "void",     "_Bool",    "char",       "short",         "int",       "long",
-        "struct",   "union",    "typedef",    "enum",          "static",    "extern",
-        "_Alignas", "signed",   "unsigned",   "const",         "volatile",  "auto",
-        "register", "restrict", "__restrict", "__restrict__",  "_Noreturn", "float",
-        "double",   "typeof",   "inline",     "_Thread_local", "__thread",  "_Atomic",
-    };
-
-    for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
-      hashmap_put(&typenames_map, kw[i], (void *)1);
-    }
-  }
-
   return hashmap_get2(&typenames_map, tok->loc, tok->len) || find_typedef(tok);
 }
 
@@ -3672,11 +3664,34 @@ Obj *parse(Token *tok) {
   return globals_head.next;
 }
 
-void reset_parse(void) {
+void parse_init(void) {
+  static char *kw[] = {
+      "void",     "_Bool",    "char",       "short",         "int",       "long",
+      "struct",   "union",    "typedef",    "enum",          "static",    "extern",
+      "_Alignas", "signed",   "unsigned",   "const",         "volatile",  "auto",
+      "register", "restrict", "__restrict", "__restrict__",  "_Noreturn", "float",
+      "double",   "typeof",   "inline",     "_Thread_local", "__thread",  "_Atomic",
+  };
+
+  for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++) {
+    hashmap_put(&typenames_map, kw[i], (void *)1);
+  }
+}
+
+void parse_destroy(void) { hashmap_clear(&typenames_map); }
+
+void parse_end_unit(void) {
   locals = NULL;
   globals_head.next = NULL;
-  globals = &globals_head;
-  scope = gc_alloc(sizeof(Scope));
+  globals = NULL;
+
+  if (scope) {
+    hashmap_clear(&scope->vars);
+    hashmap_clear(&scope->tags);
+    free(scope);
+  }
+
+  scope = NULL;
   current_fn = NULL;
   gotos = NULL;
   labels = NULL;
@@ -3686,8 +3701,12 @@ void reset_parse(void) {
   current_switch = NULL;
   anon_gvar_id_next = 0;
   anon_string_literal_id_next = 0;
-  hashmap_clear(&typenames_map);
+}
 
+void parse_begin_unit(void) {
+  parse_end_unit();
+  globals = &globals_head;
+  scope = calloc(1, sizeof(Scope));
   declare_builtin_functions();
 }
 
