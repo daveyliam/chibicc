@@ -141,6 +141,20 @@ void hashmap_delete2(HashMap *map, char *key, int keylen) {
   }
 }
 
+bool hashmap_next(HashMap *map, int *iter, HashEntry **entry_out) {
+  if (map->buckets) {
+    while (*iter < map->capacity) {
+      HashEntry *ent = &map->buckets[*iter];
+      *iter = *iter + 1;
+      if (ent->key != NULL && ent->key != TOMBSTONE) {
+        *entry_out = ent;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 void hashmap_clear(HashMap *map) {
   if (map->buckets) {
     for (int i = 0; i < map->capacity; i++) {

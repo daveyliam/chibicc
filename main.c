@@ -31,16 +31,17 @@ static void add_default_include_paths(char *argv0) {
   // to ./include relative to argv[0].
   char *d = dirname2(argv0);
   char *path = format("%s/include", d);
-  gc_free(d);
-  strarray_push(&include_paths, path);
+  free(d);
+  strarray_push(&include_paths, strdup(path));
+  gc_free(path);
 }
 
 static void define(char *str) {
   char *eq = strchr(str, '=');
   if (eq) {
-    char *name = gc_strndup(str, eq - str);
+    char *name = strndup(str, eq - str);
     define_macro(name, eq + 1);
-    gc_free(name);
+    free(name);
   } else {
     define_macro(str, "1");
   }
@@ -76,7 +77,7 @@ static void parse_args(int argc, char **argv) {
     }
 
     if (!strncmp(argv[i], "-I", 2)) {
-      strarray_push(&include_paths, gc_strdup(argv[i] + 2));
+      strarray_push(&include_paths, strdup(argv[i] + 2));
       continue;
     }
 
@@ -131,10 +132,10 @@ static void parse_args(int argc, char **argv) {
   }
 
   for (int i = 0; i < idirafter.len; i++) {
-    strarray_push(&include_paths, gc_strdup(idirafter.data[i]));
+    strarray_push(&include_paths, strdup(idirafter.data[i]));
   }
 
-  strarray_free(&idirafter, false);
+  strarray_clear(&idirafter, false);
 
   if (input_paths.len == 0) {
     error("no input files");
@@ -227,6 +228,7 @@ int main(int argc, char **argv, char **envp) {
   tokenize_init();
   preprocess_init();
   parse_init();
+  codegen_init();
 
   Prog progs_head = {};
   Prog *progs_tail = &progs_head;
@@ -241,7 +243,7 @@ int main(int argc, char **argv, char **envp) {
     init_macros();
     add_default_include_paths(argv[0]);
 
-    Prog *prog = gc_alloc(sizeof(Prog));
+    Prog *prog = calloc(1, sizeof(Prog));
     prog->base_file = input;
     prog->index = i;
 
@@ -269,9 +271,11 @@ int main(int argc, char **argv, char **envp) {
   for (Prog *prog = progs_head.next; prog;) {
     Prog *prog_next = prog->next;
     prog_free(prog);
+    free(prog);
     prog = prog_next;
   }
 
+  codegen_destroy();
   parse_destroy();
   preprocess_destroy();
   tokenize_destroy();
@@ -283,12 +287,12 @@ int main(int argc, char **argv, char **envp) {
   close(fd);
   fchmodat(AT_FDCWD, out_path, 0755, 0);
 
-  bytearray_free(&buf);
+  bytearray_clear(&buf);
 
-  strarray_free(&include_paths, true);
-  strarray_free(&input_paths, false);
-  strarray_free(&opt_define, false);
-  strarray_free(&opt_include, false);
+  strarray_clear(&include_paths, true);
+  strarray_clear(&input_paths, false);
+  strarray_clear(&opt_define, false);
+  strarray_clear(&opt_include, false);
 
   gc_free_all();
 

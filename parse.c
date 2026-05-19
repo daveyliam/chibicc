@@ -183,6 +183,11 @@ static void enter_scope(void) {
 
 static void leave_scope(void) {
   Scope *sc = scope;
+  int iter = 0;
+  HashEntry *entry = 0;
+  while (hashmap_next(&sc->vars, &iter, &entry)) {
+    free(entry->val);
+  }
   hashmap_clear(&sc->vars);
   hashmap_clear(&sc->tags);
   scope = sc->next;
@@ -274,13 +279,17 @@ Node *new_cast(Node *expr, Type *ty) {
 }
 
 static VarScope *push_scope(char *name) {
-  VarScope *sc = gc_alloc(sizeof(VarScope));
+  VarScope *sc_prev = hashmap_get(&scope->vars, name);
+  if (sc_prev != NULL) {
+    free(sc_prev);
+  }
+  VarScope *sc = calloc(1, sizeof(VarScope));
   hashmap_put(&scope->vars, name, sc);
   return sc;
 }
 
 static Initializer *new_initializer(Type *ty, bool is_flexible) {
-  Initializer *init = gc_alloc(sizeof(Initializer));
+  Initializer *init = calloc(1, sizeof(Initializer));
   init->ty = ty;
 
   if (ty->kind == TY_ARRAY) {
@@ -289,7 +298,7 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
       return init;
     }
 
-    init->children = gc_alloc(ty->array_len * sizeof(Initializer *));
+    init->children = calloc(ty->array_len, sizeof(Initializer *));
     for (int i = 0; i < ty->array_len; i++) {
       init->children[i] = new_initializer(ty->base, false);
     }
@@ -303,11 +312,11 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
       len++;
     }
 
-    init->children = gc_alloc(len * sizeof(Initializer *));
+    init->children = calloc(len, sizeof(Initializer *));
 
     for (Member *mem = ty->members; mem; mem = mem->next) {
       if (is_flexible && ty->is_flexible && !mem->next) {
-        Initializer *child = gc_alloc(sizeof(Initializer));
+        Initializer *child = calloc(1, sizeof(Initializer));
         child->ty = mem->ty;
         child->is_flexible = true;
         init->children[mem->idx] = child;
@@ -319,6 +328,29 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
   }
 
   return init;
+}
+
+static void clear_initializer(Initializer *init) {
+  if (init->children != NULL) {
+    Type *ty = init->ty;
+    int children_length = 0;
+    if (ty->kind == TY_ARRAY) {
+      children_length = ty->array_len;
+    }
+    else if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+      for (Member *mem = ty->members; mem; mem = mem->next) {
+        children_length++;
+      }
+    }
+    for (int i = 0; i < children_length; i++) {
+      Initializer *child = init->children[i];
+      if (child != NULL) {
+        clear_initializer(child);
+        free(child);
+      }
+    }
+    free(init->children);
+  }
 }
 
 static Obj *new_var(char *name, Type *ty) {
@@ -1008,7 +1040,11 @@ static Token *skip_excess_element(Token *tok) {
 // string-initializer = string-literal
 static void string_initializer(Token **rest, Token *tok, Initializer *init) {
   if (init->is_flexible) {
-    *init = *new_initializer(array_of(init->ty->base, tok->ty->array_len), false);
+    Type *arr_ty = array_of(init->ty->base, tok->ty->array_len);
+    clear_initializer(init);
+    Initializer *init2 = new_initializer(arr_ty, false);
+    *init = *init2;
+    free(init2);
   }
 
   int len = MIN(init->ty->array_len, tok->ty->array_len);
@@ -1189,6 +1225,10 @@ static int count_array_init_elements(Token *tok, Type *ty) {
     i++;
     max = MAX(max, i);
   }
+
+  clear_initializer(dummy);
+  free(dummy);
+
   return max;
 }
 
@@ -1198,7 +1238,11 @@ static void array_initializer1(Token **rest, Token *tok, Initializer *init) {
 
   if (init->is_flexible) {
     int len = count_array_init_elements(tok, init->ty);
-    *init = *new_initializer(array_of(init->ty->base, len), false);
+    Type *arr_ty = array_of(init->ty->base, len);
+    clear_initializer(init);
+    Initializer *init2 = new_initializer(arr_ty, false);
+    *init = *init2;
+    free(init2);
   }
 
   bool first = true;
@@ -1234,7 +1278,11 @@ static void array_initializer1(Token **rest, Token *tok, Initializer *init) {
 static void array_initializer2(Token **rest, Token *tok, Initializer *init, int i) {
   if (init->is_flexible) {
     int len = count_array_init_elements(tok, init->ty);
-    *init = *new_initializer(array_of(init->ty->base, len), false);
+    Type *arr_ty = array_of(init->ty->base, len);
+    clear_initializer(init);
+    Initializer *init2 = new_initializer(arr_ty, false);
+    *init = *init2;
+    free(init2);
   }
 
   for (; i < init->ty->array_len && !is_end(tok); i++) {
@@ -1478,6 +1526,10 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   lhs->var = var;
 
   Node *rhs = create_lvar_init(init, var->ty, &desg, tok);
+
+  clear_initializer(init);
+  free(init);
+
   return new_binary(ND_COMMA, lhs, rhs, tok);
 }
 
@@ -1579,7 +1631,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
     return cur;
   }
 
-  Relocation *rel = gc_alloc(sizeof(Relocation));
+  Relocation *rel = calloc(1, sizeof(Relocation));
   rel->offset = offset;
   rel->var = gvar;
   rel->addend = val;
@@ -1616,6 +1668,9 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
   var->init_data = buf;
   var->init_data_size = init_data_size;
   var->rel = head.next;
+
+  clear_initializer(init);
+  free(init);
 }
 
 // Returns true if a given token represents a type.
@@ -3685,10 +3740,8 @@ void parse_end_unit(void) {
   globals_head.next = NULL;
   globals = NULL;
 
-  if (scope) {
-    hashmap_clear(&scope->vars);
-    hashmap_clear(&scope->tags);
-    free(scope);
+  while (scope) {
+    leave_scope();
   }
 
   scope = NULL;
@@ -3714,8 +3767,18 @@ void prog_free(Prog *prog) {
   for (Obj *obj = prog->obj; obj;) {
     Obj *obj_next = obj->next;
     // TODO : recurse and free all members.
+
+    // Free list of references to function.
+    strarray_clear(&obj->refs, false);
+
+    // Free relocations.
+    for (Relocation *rel = obj->rel; rel;) {
+      Relocation *rel_next = rel->next;
+      free(rel);
+      rel = rel_next;
+    }
+
     gc_free(obj);
     obj = obj_next;
   }
-  gc_free(prog);
 }

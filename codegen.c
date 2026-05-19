@@ -28,7 +28,7 @@ static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
 static Label *new_label(void) {
-  Label *label = gc_alloc(sizeof(Label));
+  Label *label = calloc(1, sizeof(Label));
   if (labels) {
     label->next = labels;
   }
@@ -39,7 +39,7 @@ static Label *new_label(void) {
 static void label_set_dest(Label *label) { label->offset = current_offset; }
 
 static LabelRef *label_add_ref(Label *label) {
-  LabelRef *ref = gc_alloc(sizeof(LabelRef));
+  LabelRef *ref = calloc(1, sizeof(LabelRef));
   ref->offset = current_offset;
   if (label->refs) {
     ref->next = label->refs;
@@ -1886,4 +1886,19 @@ void codegen(Prog *progs, ByteArray *out) {
   patch_i64(EHSIZE + PHENTSIZE + 40, data_memsz);  // data p_memsz
 
   current_out = NULL;
+}
+
+void codegen_init(void) {}
+
+void codegen_destroy(void) {
+  for (Label *label = labels; label;) {
+    Label *label_next = label->next;
+    for (LabelRef *ref = label->refs; ref;) {
+      LabelRef *ref_next = ref->next;
+      free(ref);
+      ref = ref_next;
+    }
+    free(label);
+    label = label_next;
+  }
 }

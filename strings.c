@@ -2,14 +2,15 @@
 
 void strarray_push(StringArray *arr, char *s) {
   if (!arr->data) {
-    arr->data = gc_alloc(8 * sizeof(char *));
+    arr->data = calloc(8, sizeof(char *));
     arr->capacity = 8;
   }
 
   if (arr->capacity == arr->len) {
-    char **data2 = gc_alloc(sizeof(char *) * arr->capacity * 2);
+    // TODO : replace with realloc when supported in libc.c.
+    char **data2 = calloc(arr->capacity * 2, sizeof(char *));
     memcpy(data2, arr->data, sizeof(char *) * arr->len);
-    gc_free(arr->data);
+    free(arr->data);
     arr->data = data2;
     arr->capacity *= 2;
     for (int i = arr->len; i < arr->capacity; i++) {
@@ -20,15 +21,15 @@ void strarray_push(StringArray *arr, char *s) {
   arr->data[arr->len++] = s;
 }
 
-void strarray_free(StringArray *arr, bool should_free_elems) {
+void strarray_clear(StringArray *arr, bool should_free_elems) {
   if (arr->data) {
     if (should_free_elems) {
       for (int i = 0; i < arr->len; i++) {
-        gc_free(arr->data[i]);
+        free(arr->data[i]);
         arr->data[i] = NULL;
       }
     }
-    gc_free(arr->data);
+    free(arr->data);
     arr->data = NULL;
   }
   arr->len = 0;
@@ -58,25 +59,25 @@ char *format(const char *fmt, ...) {
 
 char *dirname2(const char *s) {
   if (s == NULL || *s == 0) {
-    return gc_strdup(".");
+    return strdup(".");
   }
   int i = strlen(s) - 1;
   for (; s[i] == '/'; i--) {
     if (i == 0) {
-      return gc_strdup("/");
+      return strdup("/");
     }
   }
   for (; s[i] != '/'; i--) {
     if (i == 0) {
-      return gc_strdup(".");
+      return strdup(".");
     }
   }
   for (; s[i] == '/'; i--) {
     if (i == 0) {
-      return gc_strdup("/");
+      return strdup("/");
     }
   }
-  return gc_strndup(s, i + 1);
+  return strndup(s, i + 1);
 }
 
 void bytearray_append(ByteArray *arr, uint8_t b) {
@@ -87,6 +88,7 @@ void bytearray_append(ByteArray *arr, uint8_t b) {
     } else {
       cap2 = arr->cap * 2;
     }
+    // TODO : replace with realloc when supported in libc.c.
     uint8_t *data2 = calloc(cap2, sizeof(uint8_t));
     if (arr->data != NULL) {
       memcpy(data2, arr->data, arr->len);
@@ -105,7 +107,7 @@ void bytearray_extend(ByteArray *arr, uint8_t *data, int len) {
   }
 }
 
-void bytearray_free(ByteArray *arr) {
+void bytearray_clear(ByteArray *arr) {
   if (arr->data) {
     free(arr->data);
     arr->data = NULL;

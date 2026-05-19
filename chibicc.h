@@ -42,7 +42,7 @@ typedef struct {
 } StringArray;
 
 void strarray_push(StringArray *arr, char *s);
-void strarray_free(StringArray *arr, bool should_free_elems);
+void strarray_clear(StringArray *arr, bool should_free_elems);
 char *format(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 char *dirname2(const char *path);
 
@@ -54,7 +54,7 @@ typedef struct {
 
 void bytearray_append(ByteArray *arr, uint8_t b);
 void bytearray_extend(ByteArray *arr, uint8_t *data, int len);
-void bytearray_free(ByteArray *arr);
+void bytearray_clear(ByteArray *arr);
 
 //
 // tokenize.c
@@ -462,6 +462,8 @@ struct Prog {
 
 void codegen(Prog *progs, ByteArray *out);
 int align_to(int n, int align);
+void codegen_init(void);
+void codegen_destroy(void);
 
 //
 // unicode.c
@@ -495,6 +497,7 @@ void hashmap_put(HashMap *map, char *key, void *val);
 void hashmap_put2(HashMap *map, char *key, int keylen, void *val);
 void hashmap_delete(HashMap *map, char *key);
 void hashmap_delete2(HashMap *map, char *key, int keylen);
+bool hashmap_next(HashMap *map, int *iter, HashEntry **entry_out);
 void hashmap_clear(HashMap *map);
 
 //

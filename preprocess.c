@@ -933,7 +933,7 @@ static Token *preprocess2(Token *tok) {
       if (filename[0] != '/' && is_dquote) {
         char *d = dirname2(start->file->name);
         char *path = format("%s/%s", d, filename);
-        gc_free(d);
+        free(d);
         if (file_exists(path)) {
           tok = include_file(tok, path, start->next->next);
           continue;
