@@ -158,7 +158,11 @@ static Token *must_tokenize_file(char *path) {
 }
 
 static Token *append_tokens(Token *tok1, Token *tok2) {
-  if (!tok1 || tok1->kind == TK_EOF) {
+  if (!tok1) {
+    return tok2;
+  }
+  if (tok1->kind == TK_EOF) {
+    free_token(tok1);
     return tok2;
   }
 
@@ -166,11 +170,12 @@ static Token *append_tokens(Token *tok1, Token *tok2) {
   while (t->next->kind != TK_EOF) {
     t = t->next;
   }
+  free_token(t->next);
   t->next = tok2;
   return tok1;
 }
 
-static Obj *cc1(void) {
+static void cc1(Token **tok_out, Obj **obj_out) {
   Token *tok = NULL;
 
   // Process -D and -U options
@@ -207,7 +212,8 @@ static Obj *cc1(void) {
   tok = append_tokens(tok, tok2);
   tok = preprocess(tok);
 
-  return parse(tok);
+  *tok_out = tok;
+  *obj_out = parse(tok);
 }
 
 static int open_output_file(const char *path, int mode) {
@@ -249,10 +255,13 @@ int main(int argc, char **argv, char **envp) {
 
     current_prog = prog;
 
-    Obj *obj = cc1();
+    Token *tok = NULL;
+    Obj *obj = NULL;
+    cc1(&tok, &obj);
 
     current_prog = NULL;
 
+    prog->tok = tok;
     prog->obj = obj;
     progs_tail->next = prog;
     progs_tail = prog;

@@ -102,7 +102,9 @@ struct Token {
   bool at_bol;      // True if this token is at beginning of line
   bool has_space;   // True if this token follows a space character
   Hideset *hideset; // For macro expansion
-  Token *origin;    // If this is expanded from a macro, the original token
+  bool is_expanded; // True if produced by macro expansion.
+  File *origin_file; // Resolved root-most source file (for __FILE__ / __LINE__).
+  int origin_line_no; // Resolved root-most source line number.
 };
 
 noreturn void error(char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -119,6 +121,8 @@ File *new_file(char *name, int file_no, char *contents);
 Token *tokenize_string_literal(Token *tok, Type *basety);
 Token *tokenize(File *file);
 Token *tokenize_file(char *filename);
+void free_token(Token *tok);
+void free_token_list(Token *start);
 void tokenize_init(void);
 void tokenize_destroy(void);
 void tokenize_begin_unit(void);
@@ -147,7 +151,6 @@ void preprocess_end_unit(void);
 // Variable or function
 typedef struct Obj Obj;
 struct Obj {
-  Obj *gc_next;
   Obj *next;
   char *name;    // Variable name
   Type *ty;      // Type
@@ -455,6 +458,7 @@ void add_type(Node *node);
 
 struct Prog {
   Prog *next;
+  Token *tok;
   Obj *obj;
   char *base_file;
   int index;

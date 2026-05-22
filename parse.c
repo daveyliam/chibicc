@@ -354,7 +354,7 @@ static void clear_initializer(Initializer *init) {
 }
 
 static Obj *new_var(char *name, Type *ty) {
-  Obj *var = gc_alloc(sizeof(Obj));
+  Obj *var = calloc(1, sizeof(Obj));
   var->name = name;
   var->ty = ty;
   var->align = ty->align;
@@ -3763,22 +3763,35 @@ void parse_begin_unit(void) {
   declare_builtin_functions();
 }
 
+static void obj_clear(Obj *obj) {
+  // Free list of references to function.
+  strarray_clear(&obj->refs, false);
+
+  // Free relocations.
+  for (Relocation *rel = obj->rel; rel;) {
+    Relocation *rel_next = rel->next;
+    free(rel);
+    rel = rel_next;
+  }
+  obj->rel = NULL;
+
+  // Free locals.
+  for (Obj *lvar = obj->locals; lvar;) {
+    Obj *lvar_next = lvar->next;
+    obj_clear(lvar);
+    free(lvar);
+    lvar = lvar_next;
+  }
+}
+
 void prog_free(Prog *prog) {
+  // Free vars and functions.
   for (Obj *obj = prog->obj; obj;) {
     Obj *obj_next = obj->next;
-    // TODO : recurse and free all members.
-
-    // Free list of references to function.
-    strarray_clear(&obj->refs, false);
-
-    // Free relocations.
-    for (Relocation *rel = obj->rel; rel;) {
-      Relocation *rel_next = rel->next;
-      free(rel);
-      rel = rel_next;
-    }
-
-    gc_free(obj);
+    obj_clear(obj);
+    free(obj);
     obj = obj_next;
   }
+  // Free tokens.
+  free_token_list(prog->tok);
 }

@@ -95,7 +95,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
   va_end(ap);
 }
 
-// Consumes the current token if it matches `op`.
+// Returns true if the current token if it matches `op`.
 bool equal(Token *tok, char *op) {
   return strncmp(tok->loc, op, tok->len) == 0 && op[tok->len] == '\0';
 }
@@ -108,6 +108,7 @@ Token *skip(Token *tok, char *op) {
   return tok->next;
 }
 
+// Consumes the current token if it matches `op`.
 bool consume(Token **rest, Token *tok, char *str) {
   if (equal(tok, str)) {
     *rest = tok->next;
@@ -119,7 +120,7 @@ bool consume(Token **rest, Token *tok, char *str) {
 
 // Create a new token.
 static Token *new_token(TokenKind kind, char *start, char *end) {
-  Token *tok = gc_alloc(sizeof(Token));
+  Token *tok = calloc(1, sizeof(Token));
   tok->kind = kind;
   tok->loc = start;
   tok->len = end - start;
@@ -723,8 +724,8 @@ File *new_file(char *name, int file_no, char *contents) {
   File *file = calloc(1, sizeof(File));
   file->next = files;
   files = file;
-  file->name = name;
-  file->display_name = name;
+  file->name = strdup(name);
+  file->display_name = strdup(name);
   file->file_no = file_no;
   file->contents = strdup(contents);
   return file;
@@ -849,6 +850,19 @@ Token *tokenize_file(char *path) {
   return tokenize(file);
 }
 
+void free_token(Token *tok) {
+  free(tok);
+}
+
+void free_token_list(Token *start) {
+  for (Token *tok = start; tok;) {
+    Token *tok_next = tok->next;
+    // tok_clear(tok);
+    free_token(tok);
+    tok = tok_next;
+  }
+}
+
 void tokenize_init(void) {
   static char *kw[] = {
       "return",    "if",         "else",
@@ -875,6 +889,12 @@ void tokenize_init(void) {
 void tokenize_destroy(void) {
   for (File *file = files; file;) {
     File *file_next = file->next;
+    if (file->name != NULL) {
+      free(file->name);
+    }
+    if (file->display_name != NULL) {
+      free(file->display_name);
+    }
     if (file->contents != NULL) {
       free(file->contents);
     }
