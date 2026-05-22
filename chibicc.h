@@ -121,8 +121,6 @@ File *new_file(char *name, int file_no, char *contents);
 Token *tokenize_string_literal(Token *tok, Type *basety);
 Token *tokenize(File *file);
 Token *tokenize_file(char *filename);
-void free_token(Token *tok);
-void free_token_list(Token *start);
 void tokenize_init(void);
 void tokenize_destroy(void);
 void tokenize_begin_unit(void);
@@ -143,6 +141,8 @@ void preprocess_init(void);
 void preprocess_destroy(void);
 void preprocess_begin_unit(void);
 void preprocess_end_unit(void);
+void free_token(Token *tok);
+void free_token_list(Token *start);
 
 //
 // parse.c

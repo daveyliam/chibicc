@@ -32,8 +32,7 @@ static void add_default_include_paths(char *argv0) {
   char *d = dirname2(argv0);
   char *path = format("%s/include", d);
   free(d);
-  strarray_push(&include_paths, strdup(path));
-  gc_free(path);
+  strarray_push(&include_paths, path);
 }
 
 static void define(char *str) {

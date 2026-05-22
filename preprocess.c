@@ -79,22 +79,51 @@ static Macro *find_macro(Token *tok);
 
 static bool is_hash(Token *tok) { return tok->at_bol && equal(tok, "#"); }
 
-static Token *copy_token(Token *tok) {
-  Token *t = calloc(1, sizeof(Token));
-  *t = *tok;
-  t->next = NULL;
-  return t;
+static void free_hideset(Hideset *start) {
+  for (Hideset *hs = start; hs;) {
+    Hideset *hs_next = hs->next;
+    free(hs);
+    hs = hs_next;
+  }
+}
+
+static void clear_token(Token *tok) {
+  if (tok->str != NULL) {
+    free(tok->str);
+  }
+  tok->str = NULL;
+  if (tok->hideset != NULL) {
+    free_hideset(tok->hideset);
+  }
+  tok->hideset = NULL;
+}
+
+void free_token(Token *tok) {
+  clear_token(tok);
+  free(tok);
+}
+
+void free_token_list(Token *start) {
+  for (Token *tok = start; tok;) {
+    Token *tok_next = tok->next;
+    free_token(tok);
+    tok = tok_next;
+  }
 }
 
 static Token *new_eof(Token *tok) {
-  Token *t = copy_token(tok);
+  Token *t = calloc(1, sizeof(Token));
+  *t = *tok;
+  t->str = NULL;
+  t->hideset = NULL;
+  t->next = NULL;
   t->kind = TK_EOF;
   t->len = 0;
   return t;
 }
 
 static Hideset *new_hideset(char *name) {
-  Hideset *hs = gc_alloc(sizeof(Hideset));
+  Hideset *hs = calloc(1, sizeof(Hideset));
   hs->name = name;
   return hs;
 }
@@ -102,11 +131,12 @@ static Hideset *new_hideset(char *name) {
 static Hideset *hideset_union(Hideset *hs1, Hideset *hs2) {
   Hideset head = {};
   Hideset *cur = &head;
-
   for (; hs1; hs1 = hs1->next) {
     cur = cur->next = new_hideset(hs1->name);
   }
-  cur->next = hs2;
+  for (; hs2; hs2 = hs2->next) {
+    cur = cur->next = new_hideset(hs2->name);
+  }
   return head.next;
 }
 
@@ -131,16 +161,18 @@ static Hideset *hideset_intersection(Hideset *hs1, Hideset *hs2) {
   return head.next;
 }
 
-static Token *add_hideset(Token *tok, Hideset *hs) {
-  Token head = {};
-  Token *cur = &head;
-
-  for (; tok; tok = tok->next) {
-    Token *t = copy_token(tok);
-    t->hideset = hideset_union(t->hideset, hs);
-    cur = cur->next = t;
+static Token *copy_token(Token *tok) {
+  Token *t = calloc(1, sizeof(Token));
+  *t = *tok;
+  if (tok->str != NULL) {
+    t->str = calloc(tok->ty->size, 1);
+    memcpy(t->str, tok->str, tok->ty->size);
   }
-  return head.next;
+  if (tok->hideset != NULL) {
+    t->hideset = hideset_union(tok->hideset, NULL);
+  }
+  t->next = NULL;
+  return t;
 }
 
 static Token *copy_tokens(Token *tok) {
@@ -150,6 +182,22 @@ static Token *copy_tokens(Token *tok) {
         cur = cur->next = copy_token(tok);
     }
     return head.next;
+}
+
+static Token *add_hideset(Token *tok, Hideset *hs) {
+  Token head = {};
+  Token *cur = &head;
+
+  for (; tok; tok = tok->next) {
+    Token *t = copy_token(tok);
+    Hideset *hs2 = hideset_union(t->hideset, hs);
+    if (t->hideset) {
+      free_hideset(t->hideset);
+    }
+    t->hideset = hs2;
+    cur = cur->next = t;
+  }
+  return head.next;
 }
 
 // Copies all tokens in tok1 and joins to the left of tok2.
@@ -326,7 +374,9 @@ static Token *read_line(Token **rest, Token *tok) {
 
 static Token *new_num_token(int val, Token *tmpl) {
   char *buf = format("%d\n", val);
-  return tokenize(new_file(tmpl->file->name, tmpl->file->file_no, buf));
+  Token *num_toks = tokenize(new_file(tmpl->file->name, tmpl->file->file_no, buf));
+  free(buf);
+  return num_toks;
 }
 
 static Token *read_const_expr(Token **rest, Token *tok) {
@@ -393,7 +443,10 @@ static long eval_const_expr(Token **rest, Token *tok) {
     if (t->kind == TK_IDENT) {
       Token *next = t->next;
       Token *num_tok = new_num_token(0, t);
+      clear_token(t);
       *t = *num_tok;
+      num_tok->str = NULL;
+      num_tok->hideset = NULL;
       free_token_list(num_tok);
       t->next = next;
     }
@@ -423,6 +476,11 @@ static CondIncl *push_cond_incl(Token *tok, bool included) {
   return ci;
 }
 
+static void free_cond_incl(CondIncl *ci) {
+  free_token(ci->tok);
+  free(ci);
+}
+
 static Macro *find_macro(Token *tok) {
   if (tok->kind != TK_IDENT) {
     return NULL;
@@ -430,7 +488,7 @@ static Macro *find_macro(Token *tok) {
   return hashmap_get2(&macros, tok->loc, tok->len);
 }
 
-static void clear_macro(Macro *m) {
+static void free_macro(Macro *m) {
   free(m->name);
   m->name = NULL;
   if (m->va_args_name) {
@@ -446,13 +504,13 @@ static void clear_macro(Macro *m) {
   m->params = NULL;
   free_token_list(m->body);
   m->body = NULL;
+  free(m);
 }
 
 static Macro *add_macro(char *name, bool is_objlike, Token *body) {
   Macro *m_prev = hashmap_get(&macros, name);
   if (m_prev != NULL) {
-    clear_macro(m_prev);
-    free(m_prev);
+    free_macro(m_prev);
   }
 
   Macro *m = calloc(1, sizeof(Macro));
@@ -684,6 +742,21 @@ static bool has_varargs(MacroArg *args) {
   return false;
 }
 
+static void free_macro_arg(MacroArg *arg) {
+  if (arg->tok) {
+    free_token_list(arg->tok);
+  }
+  free(arg);
+}
+
+static void free_macro_args_list(MacroArg *args) {
+  for (MacroArg *arg = args; arg;) {
+    MacroArg *arg_next = arg->next;
+    free_macro_arg(arg);
+    arg = arg_next;
+  }
+}
+
 // Replace func-like macro parameters with given arguments.
 // Does NOT free input tokens as `tok` is the shared func-like macro body tokens.
 static Token *subst(Token *tok, MacroArg *args) {
@@ -736,7 +809,10 @@ static Token *subst(Token *tok, MacroArg *args) {
       if (arg) {
         if (arg->tok->kind != TK_EOF) {
           Token *paste_arg_tok = paste(cur, arg->tok);
+          clear_token(cur);
           *cur = *paste_arg_tok;
+          paste_arg_tok->str = NULL;
+          paste_arg_tok->hideset = NULL;
           // paste() only returns the joined token and EOF, so it is ok to free here after
           // the first token is copied.
           free_token_list(paste_arg_tok);
@@ -749,7 +825,10 @@ static Token *subst(Token *tok, MacroArg *args) {
       }
 
       Token *paste_tok = paste(cur, tok->next);
+      clear_token(cur);
       *cur = *paste_tok;
+      paste_tok->str = NULL;
+      paste_tok->hideset = NULL;
       free_token_list(paste_tok);
       tok = tok->next->next;
       continue;
@@ -789,11 +868,10 @@ static Token *subst(Token *tok, MacroArg *args) {
         for (t = arg->tok; t->kind != TK_EOF; t = t->next) {
           cur = cur->next = t;
         }
+        arg->tok = NULL;
         free_token(t);
-      } else {
-        free_token_list(arg->tok);
       }
-      free(arg);
+      free_macro_arg(arg);
       tok = skip(tok, ")");
       continue;
     }
@@ -822,15 +900,6 @@ static Token *subst(Token *tok, MacroArg *args) {
   return head.next;
 }
 
-static void free_macro_args_list(MacroArg *args) {
-  for (MacroArg *arg = args; arg;) {
-    MacroArg *arg_next = arg->next;
-    free_token_list(arg->tok);
-    free(arg);
-    arg = arg_next;
-  }
-}
-
 // If tok is a macro, expand it and return true.
 // Otherwise, do nothing and return false.
 static bool expand_macro(Token **rest, Token *tok) {
@@ -856,8 +925,11 @@ static bool expand_macro(Token **rest, Token *tok) {
 
   // Object-like macro application
   if (m->is_objlike) {
-    Hideset *hs = hideset_union(tok->hideset, new_hideset(m->name));
+    Hideset *hs2 = new_hideset(m->name);
+    Hideset *hs = hideset_union(tok->hideset, hs2);
+    free_hideset(hs2);
     Token *body = add_hideset(m->body, hs);
+    free_hideset(hs);
     for (Token *t = body; t->kind != TK_EOF; t = t->next) {
       t->is_expanded = true;
       if (tok->origin_file != NULL) {
@@ -892,14 +964,18 @@ static bool expand_macro(Token **rest, Token *tok) {
   // for the new tokens should be. We take the interesection of the
   // macro token and the closing parenthesis and use it as a new hideset
   // as explained in the Dave Prossor's algorithm.
-  Hideset *hs = hideset_intersection(macro_token->hideset, rparen->hideset);
-  hs = hideset_union(hs, new_hideset(m->name));
+  Hideset *hs1 = hideset_intersection(macro_token->hideset, rparen->hideset);
+  Hideset *hs2 = new_hideset(m->name);
+  Hideset *hs = hideset_union(hs1, hs2);
+  free_hideset(hs1);
+  free_hideset(hs2);
 
   Token *body = subst(m->body, args);
   free_macro_args_list(args);
 
   Token *body2 = add_hideset(body, hs);
   free_token_list(body);
+  free_hideset(hs);
 
   for (Token *t = body2; t->kind != TK_EOF; t = t->next) {
     t->is_expanded = true;
@@ -915,7 +991,7 @@ static bool expand_macro(Token **rest, Token *tok) {
   *rest = append(body2, tok);
   (*rest)->at_bol = macro_token->at_bol;
   (*rest)->has_space = macro_token->has_space;
-  free(macro_token);
+  free_token(macro_token);
   free_token_list(body2);
   return true;
 }
@@ -934,6 +1010,7 @@ char *search_include_paths(char *filename) {
   for (int i = 0; i < include_paths.len; i++) {
     char *path = format("%s/%s", include_paths.data[i], filename);
     if (!file_exists(path)) {
+      free(path);
       continue;
     }
     hashmap_put(&include_cache, filename, path);
@@ -949,6 +1026,7 @@ static char *search_include_next(char *filename) {
     if (file_exists(path)) {
       return path;
     }
+    free(path);
   }
   return NULL;
 }
@@ -1020,7 +1098,7 @@ static char *detect_include_guard(Token *tok) {
     return NULL;
   }
 
-  char *macro = gc_strndup(tok->loc, tok->len);
+  char *macro = strndup(tok->loc, tok->len);
   tok = tok->next;
 
   if (!is_hash(tok) || !equal(tok->next, "define") || !equal(tok->next->next, macro)) {
@@ -1147,10 +1225,10 @@ static Token *preprocess2(Token *tok) {
           free(filename);
           free_token(filename_tok);
           free_token(hash_tok);
-          // free(path);
+          free(path);
           continue;
         }
-        // free(path);
+        free(path);
       }
 
       char *path = search_include_paths(filename);
@@ -1168,6 +1246,9 @@ static Token *preprocess2(Token *tok) {
       char *filename = read_include_filename(&tok, tok, &ignore);
       char *path = search_include_next(filename);
       tok = include_file(tok, path ? path : filename, filename_tok);
+      if (path) {
+        free(path);
+      }
       free(filename);
       free_token(filename_tok);
       free_token(hash_tok);
@@ -1268,8 +1349,7 @@ static Token *preprocess2(Token *tok) {
       }
       CondIncl *ci = cond_incl;
       cond_incl = ci->next;
-      free_token(ci->tok);
-      free(ci);
+      free_cond_incl(ci);
       tok = advance(tok);
       tok = skip_line_and_free(tok);
       free_token(hash_tok);
@@ -1332,8 +1412,7 @@ void define_macro(char *name, char *buf) {
 void undef_macro(char *name) {
   Macro *m_prev = hashmap_get(&macros, name);
   if (m_prev != NULL) {
-    clear_macro(m_prev);
-    free(m_prev);
+    free_macro(m_prev);
   }
 
   hashmap_delete(&macros, name);
@@ -1481,7 +1560,10 @@ static void join_adjacent_string_literals(Token *tok) {
       for (Token *t = tok1; t->kind == TK_STR; t = t->next) {
         if (t->ty->base->size == 1) {
           Token *t2 = tokenize_string_literal(t, basety);
+          clear_token(t);
           *t = *t2;
+          t2->str = NULL;
+          t2->hideset = NULL;
           free_token(t2);
         }
       }
@@ -1509,7 +1591,7 @@ static void join_adjacent_string_literals(Token *tok) {
       len = len + t->ty->array_len - 1;
     }
 
-    char *buf = gc_alloc(tok1->ty->base->size * len);
+    char *buf = calloc(len, tok1->ty->base->size);
 
     int i = 0;
     for (Token *t = tok1; t != tok2; t = t->next) {
@@ -1518,6 +1600,9 @@ static void join_adjacent_string_literals(Token *tok) {
     }
 
     tok1->ty = array_of(tok1->ty->base, len);
+    if (tok1->str) {
+      free(tok1->str);
+    }
     tok1->str = buf;
     skip_and_free_until(tok1->next, tok2);
     tok1->next = tok2;
@@ -1549,24 +1634,35 @@ void preprocess_end_unit(void) {
   HashEntry *entry = NULL;
   while (hashmap_next(&macros, &iter, &entry)) {
     Macro *m = entry->val;
-    clear_macro(m);
-    free(m);
+    free_macro(m);
   }
   hashmap_clear(&macros);
 
   for (CondIncl *ci = cond_incl; ci;) {
     CondIncl *ci_next = ci->next;
-    free_token(ci->tok);
-    free(ci);
+    free_cond_incl(ci);
     ci = ci_next;
   }
   cond_incl = NULL;
 
   hashmap_clear(&pragma_once);
-  include_next_idx = 0;
+
+  iter = 0;
+  entry = NULL;
+  while (hashmap_next(&include_cache, &iter, &entry)) {
+    free(entry->val);
+  }
   hashmap_clear(&include_cache);
-  counter_macro_id_next = 0;
+  
+  iter = 0;
+  entry = NULL;
+  while (hashmap_next(&include_guards, &iter, &entry)) {
+    free(entry->val);
+  }
   hashmap_clear(&include_guards);
+
+  include_next_idx = 0;
+  counter_macro_id_next = 0;
 }
 
 void preprocess_begin_unit(void) { preprocess_end_unit(); }

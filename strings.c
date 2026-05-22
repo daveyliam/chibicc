@@ -48,7 +48,7 @@ char *format(const char *fmt, ...) {
     exit(1);
   }
 
-  char *buf = gc_alloc(n + 1);
+  char *buf = calloc(n + 1, 1);
 
   va_start(ap, fmt);
   vsnprintf(buf, n + 1, fmt, ap);

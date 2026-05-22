@@ -266,7 +266,7 @@ static char *string_literal_end(char *p) {
 
 static Token *read_string_literal(char *start, char *quote) {
   char *end = string_literal_end(quote + 1);
-  char *buf = gc_alloc(end - quote);
+  char *buf = calloc(end - quote, 1);
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
@@ -292,7 +292,7 @@ static Token *read_string_literal(char *start, char *quote) {
 // is called a "surrogate pair".
 static Token *read_utf16_string_literal(char *start, char *quote) {
   char *end = string_literal_end(quote + 1);
-  uint16_t *buf = gc_alloc(2 * (end - start));
+  uint16_t *buf = calloc(end - start, 2);
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
@@ -325,7 +325,7 @@ static Token *read_utf16_string_literal(char *start, char *quote) {
 // encoded in 4 bytes.
 static Token *read_utf32_string_literal(char *start, char *quote, Type *ty) {
   char *end = string_literal_end(quote + 1);
-  uint32_t *buf = gc_alloc(4 * (end - quote));
+  uint32_t *buf = calloc(end - quote, 4);
   int len = 0;
 
   for (char *p = quote + 1; p < end;) {
@@ -848,19 +848,6 @@ Token *tokenize_file(char *path) {
   tokenize_file_no += 1;
 
   return tokenize(file);
-}
-
-void free_token(Token *tok) {
-  free(tok);
-}
-
-void free_token_list(Token *start) {
-  for (Token *tok = start; tok;) {
-    Token *tok_next = tok->next;
-    // tok_clear(tok);
-    free_token(tok);
-    tok = tok_next;
-  }
 }
 
 void tokenize_init(void) {

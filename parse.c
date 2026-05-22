@@ -355,10 +355,10 @@ static void clear_initializer(Initializer *init) {
 
 static Obj *new_var(char *name, Type *ty) {
   Obj *var = calloc(1, sizeof(Obj));
-  var->name = name;
+  var->name = gc_strdup(name);
   var->ty = ty;
   var->align = ty->align;
-  push_scope(name)->var = var;
+  push_scope(var->name)->var = var;
   return var;
 }
 
@@ -383,12 +383,15 @@ static Obj *new_gvar(char *name, Type *ty) {
 
 static Obj *new_anon_gvar(Type *ty) {
   char *name = format(".L..%d", anon_gvar_id_next++);
-  return new_gvar(name, ty);
+  Obj *var = new_gvar(name, ty);
+  free(name);
+  return var;
 }
 
 static Obj *new_string_literal(char *p, Type *ty) {
   char *name = format(".str.%d", anon_string_literal_id_next++);
   Obj *var = new_gvar(name, ty);
+  free(name);
   var->init_data = p;
   var->init_data_size = ty->size;
   return var;
