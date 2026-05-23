@@ -501,7 +501,6 @@ static void gen_is_eq_zero(Type *ty) {
   case TY_PTR:
   case TY_FUNC:
   case TY_ARRAY:
-  case TY_VLA:
     emit_eq_zero();
     break;
   default:
@@ -522,7 +521,6 @@ static void gen_is_ne_zero(Type *ty) {
   case TY_PTR:
   case TY_FUNC:
   case TY_ARRAY:
-  case TY_VLA:
     emit_ne_zero();
     break;
   default:
@@ -538,14 +536,6 @@ static void gen_lvar_addr(Obj *var) { emit_lea_fp_rel(var->offset); }
 static void gen_addr(Node *node) {
   switch (node->kind) {
   case ND_VAR:
-    // For VLA locals the address of the alloca for the array is stored in the
-    // local var alloca. So we need to load the local to get the address of the
-    // array.
-    if (node->var->ty->kind == TY_VLA) {
-      gen_lvar_addr(node->var);
-      emit_load_u64();
-      return;
-    }
     // For local variables return the stack address of the var.
     if (node->var->is_local) {
       gen_lvar_addr(node->var);
@@ -581,12 +571,6 @@ static void gen_addr(Node *node) {
       return;
     }
     break;
-  case ND_VLA_PTR:
-    // This node type wraps an ND_VAR node when a VLA is assigned to a local
-    // var. Seems to be used to prevent the var from being loaded as would
-    // normally be done to get the address of the contained VLA.
-    gen_lvar_addr(node->var);
-    return;
   default:
     break;
   }
@@ -601,7 +585,6 @@ static void load(Type *ty) {
   case TY_STRUCT:
   case TY_UNION:
   case TY_FUNC:
-  case TY_VLA:
     // If it is an array, do not attempt to load a value to the
     // register because in general we can't load an entire array to a
     // register. As a result, the result of an evaluation of an array
@@ -903,10 +886,7 @@ static void gen_expr(Node *node) {
   }
   case ND_FUNCALL: {
     if (node->lhs->kind == ND_VAR) {
-      if (strcmp(node->lhs->var->name, "alloca") == 0) {
-        error_tok(node->tok, "alloca builtin not implemented");
-        return;
-      } else if (strcmp(node->lhs->var->name, "__builtin_get_fp") == 0) {
+      if (strcmp(node->lhs->var->name, "__builtin_get_fp") == 0) {
         emit_lea_fp_rel(0);
         return;
       } else if (strcmp(node->lhs->var->name, "__builtin_syscall3") == 0) {
@@ -982,15 +962,6 @@ static void gen_expr(Node *node) {
 
     return;
   }
-  case ND_LABEL_VAL:
-    error_tok(node->tok, "label-as-value not supported");
-    return;
-  case ND_CAS:
-    error_tok(node->tok, "atomic compare and swap builtin not supported");
-    return;
-  case ND_EXCH:
-    error_tok(node->tok, "atomic exchange builtin not supported");
-    return;
   case ND_BKPT:
     emit_breakpoint();
     return;
@@ -1010,8 +981,7 @@ static void gen_expr(Node *node) {
   //   return;
   case TY_PTR:
   case TY_FUNC:
-  case TY_ARRAY:
-  case TY_VLA: {
+  case TY_ARRAY: {
     // LHS is pointer.
     // Parser always makes the pointer the LHS.
 
@@ -1045,7 +1015,6 @@ static void gen_expr(Node *node) {
       case TY_PTR:
       case TY_FUNC:
       case TY_ARRAY:
-      case TY_VLA:
         // ptr - ptr.
         emit_sub();
         return;
@@ -1323,9 +1292,6 @@ static void gen_stmt(Node *node) {
     emit_jmp(node->goto_label);
     return;
   }
-  case ND_GOTO_EXPR:
-    error_tok(node->tok, "goto expr not supported");
-    return;
   case ND_LABEL: {
     // node->goto_label should have been initialized in emit_funcs before code
     // is emitted.
@@ -1358,9 +1324,6 @@ static void gen_stmt(Node *node) {
   }
   case ND_EXPR_STMT:
     gen_expr(node->lhs);
-    return;
-  case ND_ASM:
-    error_tok(node->tok, "inline asm not supported");
     return;
   default:
     break;

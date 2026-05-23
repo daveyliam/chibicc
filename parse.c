@@ -46,7 +46,6 @@ typedef struct {
   bool is_inline;
   bool is_noreturn;
   bool is_const;
-  bool is_tls;
   int align;
 } VarAttr;
 
@@ -113,7 +112,6 @@ static bool is_cont_valid;
 // a switch statement. Otherwise, NULL.
 static Node *current_switch;
 
-static Obj *builtin_alloca;
 static Obj *builtin_get_fp;
 static Obj *builtin_syscall3;
 static Obj *builtin_syscall6;
@@ -144,7 +142,6 @@ static Node *expr(Token **rest, Token *tok);
 static int64_t eval(Node *node);
 static int64_t eval2(Node *node, Obj **gvar);
 static int64_t eval_rval(Node *node, Obj **gvar);
-static bool is_const_expr(Node *node);
 static Node *assign(Token **rest, Token *tok);
 static Node *logor(Token **rest, Token *tok);
 // static double eval_double(Node *node);
@@ -259,12 +256,6 @@ static Node *new_ulong(long val, Token *tok) {
 
 static Node *new_var_node(Obj *var, Token *tok) {
   Node *node = new_node(ND_VAR, tok);
-  node->var = var;
-  return node;
-}
-
-static Node *new_vla_ptr(Obj *var, Token *tok) {
-  Node *node = new_node(ND_VLA_PTR, tok);
   node->var = var;
   return node;
 }
@@ -459,16 +450,13 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     SHORT = 1 << 6,
     INT = 1 << 8,
     LONG = 1 << 10,
-    FLOAT = 1 << 12,
-    DOUBLE = 1 << 14,
-    OTHER = 1 << 16,
-    SIGNED = 1 << 17,
-    UNSIGNED = 1 << 18,
+    OTHER = 1 << 12,
+    SIGNED = 1 << 13,
+    UNSIGNED = 1 << 14,
   };
 
   Type *ty = ty_int;
   int counter = 0;
-  bool is_atomic = false;
 
   while (is_typename(tok)) {
     // Handle storage class specifiers.
@@ -487,11 +475,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       } else if (equal(tok, "inline")) {
         attr->is_inline = true;
       } else {
-        attr->is_tls = true;
+        error_tok(tok, "thread local storage not supported");
       }
 
       if (attr->is_typedef &&
-          attr->is_static + attr->is_extern + attr->is_inline + attr->is_tls > 1) {
+          attr->is_static + attr->is_extern + attr->is_inline > 1) {
         error_tok(
             tok, "typedef may not be used together with static,"
                  " extern, inline, __thread or _Thread_local"
@@ -522,16 +510,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       }
       tok = tok->next;
       attr->is_noreturn = true;
-      continue;
-    }
-
-    if (equal(tok, "_Atomic")) {
-      tok = tok->next;
-      if (equal(tok, "(")) {
-        ty = typename(&tok, tok->next);
-        tok = skip(tok, ")");
-      }
-      is_atomic = true;
       continue;
     }
 
@@ -588,10 +566,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       counter += INT;
     } else if (equal(tok, "long")) {
       counter += LONG;
-    } else if (equal(tok, "float")) {
-      counter += FLOAT;
-    } else if (equal(tok, "double")) {
-      counter += DOUBLE;
     } else if (equal(tok, "signed")) {
       counter |= SIGNED;
     } else if (equal(tok, "unsigned")) {
@@ -653,23 +627,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     case UNSIGNED + LONG + LONG + INT:
       ty = ty_ulonglong;
       break;
-    // case FLOAT:
-    //   ty = ty_float;
-    //   break;
-    // case DOUBLE:
-    // case LONG + DOUBLE:
-    //   ty = ty_double;
-    //   break;
     default:
       error_tok(tok, "invalid type");
     }
 
     tok = tok->next;
-  }
-
-  if (is_atomic) {
-    ty = copy_type(ty);
-    ty->is_atomic = true;
   }
 
   *rest = tok;
@@ -749,9 +711,6 @@ static Type *array_dimensions(Token **rest, Token *tok, Type *ty) {
   tok = skip(tok, "]");
   ty = type_suffix(rest, tok, ty);
 
-  if (ty->kind == TY_VLA || !is_const_expr(expr)) {
-    return vla_of(ty, expr);
-  }
   return array_of(ty, eval(expr));
 }
 
@@ -924,42 +883,6 @@ static Type *typeof_specifier(Token **rest, Token *tok) {
   return ty;
 }
 
-// Generate code for computing a VLA size.
-static Node *compute_vla_size(Type *ty, Token *tok) {
-  Node *node = new_node(ND_NULL_EXPR, tok);
-  if (ty->base) {
-    node = new_binary(ND_COMMA, node, compute_vla_size(ty->base, tok), tok);
-  }
-
-  if (ty->kind != TY_VLA) {
-    return node;
-  }
-
-  Node *base_sz;
-  if (ty->base->kind == TY_VLA) {
-    base_sz = new_var_node(ty->base->vla_size, tok);
-  } else {
-    base_sz = new_num(ty->base->size, tok);
-  }
-
-  ty->vla_size = new_lvar("", ty_ulong);
-  Node *expr = new_binary(
-      ND_ASSIGN, new_var_node(ty->vla_size, tok), new_binary(ND_MUL, ty->vla_len, base_sz, tok), tok
-  );
-  return new_binary(ND_COMMA, node, expr, tok);
-}
-
-static Node *new_alloca(Node *sz) {
-  Node *node = new_unary(ND_FUNCALL, new_var_node(builtin_alloca, sz->tok), sz->tok);
-  node->func_ty = builtin_alloca->ty;
-  node->ty = builtin_alloca->ty->return_ty;
-  node->args = sz;
-  node->funcall_next = funcalls;
-  funcalls = node;
-  add_type(sz);
-  return node;
-}
-
 // declaration = declspec (declarator ("=" expr)? ("," declarator ("="
 // expr)?)*)? ";"
 static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) {
@@ -989,31 +912,6 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       if (equal(tok, "=")) {
         gvar_initializer(&tok, tok->next, var);
       }
-      continue;
-    }
-
-    // Generate code for computing a VLA size. We need to do this
-    // even if ty is not VLA because ty may be a pointer to VLA
-    // (e.g. int (*foo)[n][m] where n and m are variables.)
-    cur = cur->next = new_unary(ND_EXPR_STMT, compute_vla_size(ty, tok), tok);
-
-    if (ty->kind == TY_VLA) {
-      if (equal(tok, "=")) {
-        error_tok(tok, "variable-sized object may not be initialized");
-      }
-
-      // Variable length arrays (VLAs) are translated to alloca() calls.
-      // For example, `int x[n+2]` is translated to `tmp = n + 2,
-      // x = alloca(tmp)`.
-      char *name = get_ident(ty->name);
-      Obj *var = new_lvar(name, ty);
-      free(name);
-      Token *tok = ty->name;
-      Node *expr = new_binary(
-          ND_ASSIGN, new_vla_ptr(var, tok), new_alloca(new_var_node(ty->vla_size, tok)), tok
-      );
-
-      cur = cur->next = new_unary(ND_EXPR_STMT, expr, tok);
       continue;
     }
 
@@ -1629,16 +1527,6 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
     return cur;
   }
 
-  // if (ty->kind == TY_FLOAT) {
-  //   *(float *)(buf + offset) = eval_double(init->expr);
-  //   return cur;
-  // }
-
-  // if (ty->kind == TY_DOUBLE) {
-  //   *(double *)(buf + offset) = eval_double(init->expr);
-  //   return cur;
-  // }
-
   Obj *gvar = NULL;
   uint64_t val = eval2(init->expr, &gvar);
 
@@ -1692,24 +1580,6 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
 // Returns true if a given token represents a type.
 static bool is_typename(Token *tok) {
   return hashmap_get2(&typenames_map, tok->loc, tok->len) || find_typedef(tok);
-}
-
-// asm-stmt = "asm" ("volatile" | "inline")* "(" string-literal ")"
-static Node *asm_stmt(Token **rest, Token *tok) {
-  Node *node = new_node(ND_ASM, tok);
-  tok = tok->next;
-
-  while (equal(tok, "volatile") || equal(tok, "inline")) {
-    tok = tok->next;
-  }
-
-  tok = skip(tok, "(");
-  if (tok->kind != TK_STR || tok->ty->base->kind != TY_CHAR) {
-    error_tok(tok, "expected string literal");
-  }
-  node->asm_str = tok->str;
-  *rest = skip(tok->next, ")");
-  return node;
 }
 
 // stmt = "return" expr? ";"
@@ -1895,16 +1765,12 @@ static Node *stmt(Token **rest, Token *tok) {
   }
 
   if (equal(tok, "asm")) {
-    return asm_stmt(rest, tok);
+    error_tok(tok, "inline assembly not supported");
   }
 
   if (equal(tok, "goto")) {
     if (equal(tok->next, "*")) {
-      // [GNU] `goto *ptr` jumps to the address specified by `ptr`.
-      Node *node = new_node(ND_GOTO_EXPR, tok);
-      node->lhs = expr(&tok, tok->next->next);
-      *rest = skip(tok, ";");
-      return node;
+      error_tok(tok, "goto expressions not supported");
     }
 
     Node *node = new_node(ND_GOTO, tok);
@@ -2121,10 +1987,6 @@ static int64_t eval2(Node *node, Obj **gvar) {
   }
   case ND_ADDR:
     return eval_rval(node->lhs, gvar);
-  case ND_LABEL_VAL:
-    // *label = &node->unique_label;
-    error_tok(node->tok, "label values not supported in initializers");
-    return 0;
   case ND_MEMBER:
     if (!gvar) {
       error_tok(node->tok, "not a compile-time constant");
@@ -2176,97 +2038,10 @@ static int64_t eval_rval(Node *node, Obj **gvar) {
   error_tok(node->tok, "invalid initializer");
 }
 
-static bool is_const_expr(Node *node) {
-  add_type(node);
-
-  switch (node->kind) {
-  case ND_ADD:
-  case ND_SUB:
-  case ND_MUL:
-  case ND_DIV:
-  case ND_MOD:
-  case ND_BITAND:
-  case ND_BITOR:
-  case ND_BITXOR:
-  case ND_SHL:
-  case ND_SHR:
-  case ND_EQ:
-  case ND_NE:
-  case ND_LT:
-  case ND_LE:
-  case ND_LOGAND:
-  case ND_LOGOR:
-    return is_const_expr(node->lhs) && is_const_expr(node->rhs);
-  case ND_COND:
-    if (!is_const_expr(node->cond)) {
-      return false;
-    }
-    return is_const_expr(eval(node->cond) ? node->then : node->els);
-  case ND_COMMA:
-    return is_const_expr(node->rhs);
-  case ND_NEG:
-  case ND_NOT:
-  case ND_BITNOT:
-  case ND_CAST:
-    return is_const_expr(node->lhs);
-  case ND_NUM:
-    return true;
-  default:
-    break;
-  }
-
-  return false;
-}
-
 int64_t const_expr(Token **rest, Token *tok) {
   Node *node = conditional(rest, tok);
   return eval(node);
 }
-
-// static double eval_double(Node *node) {
-//   add_type(node);
-
-//   if (is_integer(node->ty)) {
-//     if (node->ty->is_unsigned) {
-//       return (unsigned long)eval(node);
-//     }
-//     return eval(node);
-//   }
-
-//   switch (node->kind) {
-//   case ND_ADD:
-//     return eval_double(node->lhs) + eval_double(node->rhs);
-//   case ND_SUB:
-//     return eval_double(node->lhs) - eval_double(node->rhs);
-//   case ND_MUL:
-//     return eval_double(node->lhs) * eval_double(node->rhs);
-//   case ND_DIV: {
-//     double lhs = eval_double(node->lhs);
-//     double rhs = eval_double(node->rhs);
-//     if (rhs == 0.0) {
-//       error_tok(node->tok, "floating point division by zero in constant expression");
-//     }
-//     return lhs / rhs;
-//   }
-//   case ND_NEG:
-//     return -eval_double(node->lhs);
-//   case ND_COND:
-//     return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
-//   case ND_COMMA:
-//     return eval_double(node->rhs);
-//   case ND_CAST:
-//     if (is_flonum(node->lhs->ty)) {
-//       return eval_double(node->lhs);
-//     }
-//     return eval(node->lhs);
-//   case ND_NUM:
-//     return node->fval;
-//   default:
-//     break;
-//   }
-
-//   error_tok(node->tok, "not a compile-time constant");
-// }
 
 // Convert op= operators to expressions containing an assignment.
 //
@@ -2297,67 +2072,6 @@ static Node *to_assign(Node *binary) {
         new_binary(ND_ASSIGN, expr2, new_binary(binary->kind, expr3, binary->rhs, tok), tok);
 
     return new_binary(ND_COMMA, expr1, expr4, tok);
-  }
-
-  // If A is an atomic type, Convert `A op= B` to
-  //
-  // ({
-  //   T1 *addr = &A; T2 val = (B); T1 old = *addr; T1 new;
-  //   do {
-  //    new = old op val;
-  //   } while (!atomic_compare_exchange_strong(addr, &old, new));
-  //   new;
-  // })
-  if (binary->lhs->ty->is_atomic) {
-    Node head = {};
-    Node *cur = &head;
-
-    Obj *addr = new_lvar("", pointer_to(binary->lhs->ty));
-    Obj *val = new_lvar("", binary->rhs->ty);
-    Obj *old = new_lvar("", binary->lhs->ty);
-    Obj *new = new_lvar("", binary->lhs->ty);
-
-    cur = cur->next = new_unary(
-        ND_EXPR_STMT,
-        new_binary(ND_ASSIGN, new_var_node(addr, tok), new_unary(ND_ADDR, binary->lhs, tok), tok),
-        tok
-    );
-
-    cur = cur->next = new_unary(
-        ND_EXPR_STMT, new_binary(ND_ASSIGN, new_var_node(val, tok), binary->rhs, tok), tok
-    );
-
-    cur = cur->next = new_unary(
-        ND_EXPR_STMT,
-        new_binary(
-            ND_ASSIGN, new_var_node(old, tok), new_unary(ND_DEREF, new_var_node(addr, tok), tok),
-            tok
-        ),
-        tok
-    );
-
-    Node *loop = new_node(ND_DO, tok);
-
-    Node *body = new_binary(
-        ND_ASSIGN, new_var_node(new, tok),
-        new_binary(binary->kind, new_var_node(old, tok), new_var_node(val, tok), tok), tok
-    );
-
-    loop->then = new_node(ND_BLOCK, tok);
-    loop->then->body = new_unary(ND_EXPR_STMT, body, tok);
-
-    Node *cas = new_node(ND_CAS, tok);
-    cas->cas_addr = new_var_node(addr, tok);
-    cas->cas_old = new_unary(ND_ADDR, new_var_node(old, tok), tok);
-    cas->cas_new = new_var_node(new, tok);
-    loop->cond = new_unary(ND_NOT, cas, tok);
-
-    cur = cur->next = loop;
-    cur = cur->next = new_unary(ND_EXPR_STMT, new_var_node(new, tok), tok);
-
-    Node *node = new_node(ND_STMT_EXPR, tok);
-    node->body = head.next;
-    return node;
   }
 
   // Convert `A op= B` to ``tmp = &A, *tmp = *tmp op B`.
@@ -2614,13 +2328,6 @@ static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
     rhs = tmp;
   }
 
-  // VLA + num
-  // vla_size is an lvar containing the VLA size in bytes.
-  if (lhs->ty->base->kind == TY_VLA) {
-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
-    return new_binary(ND_ADD, lhs, rhs, tok);
-  }
-
   // ptr + num
   if (lhs->ty->base && is_integer(rhs->ty)) {
     rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
@@ -2637,12 +2344,6 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
 
   // num - num
   if (is_numeric(lhs->ty) && is_numeric(rhs->ty)) {
-    return new_binary(ND_SUB, lhs, rhs, tok);
-  }
-
-  // VLA - num
-  if (lhs->ty->base->kind == TY_VLA) {
-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
     return new_binary(ND_SUB, lhs, rhs, tok);
   }
 
@@ -2787,12 +2488,7 @@ static Node *unary(Token **rest, Token *tok) {
 
   // [GNU] labels-as-values
   if (equal(tok, "&&")) {
-    Node *node = new_node(ND_LABEL_VAL, tok);
-    node->label = get_ident(tok->next);
-    node->goto_next = gotos;
-    gotos = node;
-    *rest = tok->next->next;
-    return node;
+    error_tok(tok, "labels-as-values not supported");
   }
 
   return postfix(rest, tok);
@@ -3298,25 +2994,12 @@ static Node *primary(Token **rest, Token *tok) {
     Type *ty = typename(&tok, tok->next->next);
     *rest = skip(tok, ")");
 
-    if (ty->kind == TY_VLA) {
-      if (ty->vla_size) {
-        return new_var_node(ty->vla_size, tok);
-      }
-
-      Node *lhs = compute_vla_size(ty, tok);
-      Node *rhs = new_var_node(ty->vla_size, tok);
-      return new_binary(ND_COMMA, lhs, rhs, tok);
-    }
-
     return new_ulong(ty->size, start);
   }
 
   if (equal(tok, "sizeof")) {
     Node *node = unary(rest, tok->next);
     add_type(node);
-    if (node->ty->kind == TY_VLA) {
-      return new_var_node(node->ty->vla_size, tok);
-    }
     return new_ulong(node->ty->size, tok);
   }
 
@@ -3357,28 +3040,6 @@ static Node *primary(Token **rest, Token *tok) {
     //   return new_num(1, start);
     // }
     return new_num(2, start);
-  }
-
-  if (equal(tok, "__builtin_compare_and_swap")) {
-    Node *node = new_node(ND_CAS, tok);
-    tok = skip(tok->next, "(");
-    node->cas_addr = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->cas_old = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->cas_new = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_atomic_exchange")) {
-    Node *node = new_node(ND_EXCH, tok);
-    tok = skip(tok->next, "(");
-    node->lhs = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->rhs = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
   }
 
   if (equal(tok, "__builtin_breakpoint")) {
@@ -3627,7 +3288,7 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
 
     char *name = get_ident(ty->name);
     bool has_initializer = equal(tok, "=");
-    bool is_tentative = !has_initializer && !attr->is_extern && !attr->is_tls;
+    bool is_tentative = !has_initializer && !attr->is_extern;
 
     // Search globals for a previous definition.
     Obj *var2 = globals_head.next;
@@ -3660,7 +3321,6 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
     var->is_tentative = is_tentative;
     var->is_definition = !attr->is_extern;
     var->is_static = attr->is_static;
-    var->is_tls = attr->is_tls;
     var->is_const = attr->is_const;
     if (attr->align) {
       var->align = attr->align;
@@ -3685,12 +3345,6 @@ static bool is_function(Token *tok) {
 }
 
 static void declare_builtin_functions(void) {
-  Type *alloca_ty = func_type(pointer_to(ty_void));
-  alloca_ty->params = copy_type(ty_int);
-  builtin_alloca = new_gvar("alloca", alloca_ty);
-  builtin_alloca->is_definition = false;
-  builtin_alloca->is_builtin = true;
-
   Type *get_fp_ty = func_type(pointer_to(ty_void));
   get_fp_ty->params = NULL;
   builtin_get_fp = new_gvar("__builtin_get_fp", get_fp_ty);

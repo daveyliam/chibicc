@@ -15,9 +15,6 @@ Type *ty_uint = &(Type){TY_INT, 4, 4, true};
 Type *ty_ulong = &(Type){TY_LONG, 8, 8, true};
 Type *ty_ulonglong = &(Type){TY_LONGLONG, 8, 8, true};
 
-// Type *ty_float = &(Type){TY_FLOAT, 4, 4};
-// Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
-
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));
   ty->kind = kind;
@@ -33,10 +30,6 @@ bool is_integer(Type *ty) {
   return k == TY_BOOL || k == TY_CHAR || k == TY_SHORT || k == TY_INT || k == TY_LONG ||
          k == TY_LONGLONG || k == TY_ENUM;
 }
-
-// bool is_flonum(Type *ty) { return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE; }
-
-// bool is_numeric(Type *ty) { return is_integer(ty) || is_flonum(ty); }
 
 bool is_numeric(Type *ty) { return is_integer(ty); }
 
@@ -64,9 +57,6 @@ bool is_compatible(Type *t1, Type *t2) {
   case TY_LONG:
   case TY_LONGLONG:
     return t1->is_unsigned == t2->is_unsigned;
-  // case TY_FLOAT:
-  // case TY_DOUBLE:
-  //   return true;
   case TY_PTR:
     return is_compatible(t1->base, t2->base);
   case TY_FUNC: {
@@ -139,13 +129,6 @@ Type *array_of(Type *base, int len) {
   return ty;
 }
 
-Type *vla_of(Type *base, Node *len) {
-  Type *ty = new_type(TY_VLA, PTR_SIZE, PTR_SIZE);
-  ty->base = base;
-  ty->vla_len = len;
-  return ty;
-}
-
 Type *enum_type(void) { return new_type(TY_ENUM, 4, 4); }
 
 Type *struct_type(void) { return new_type(TY_STRUCT, 0, 1); }
@@ -161,13 +144,6 @@ static Type *get_common_type(Type *ty1, Type *ty2) {
   if (ty2->kind == TY_FUNC) {
     return pointer_to(ty2);
   }
-
-  // if (ty1->kind == TY_DOUBLE || ty2->kind == TY_DOUBLE) {
-  //   return ty_double;
-  // }
-  // if (ty1->kind == TY_FLOAT || ty2->kind == TY_FLOAT) {
-  //   return ty_float;
-  // }
 
   if (ty1->size < 4) {
     ty1 = ty_int;
@@ -280,7 +256,6 @@ void add_type(Node *node) {
     node->ty = node->lhs->ty;
     return;
   case ND_VAR:
-  case ND_VLA_PTR:
     node->ty = node->var->ty;
     return;
   case ND_COND:
@@ -328,28 +303,6 @@ void add_type(Node *node) {
       }
     }
     error_tok(node->tok, "statement expression returning void is not supported");
-    return;
-  case ND_LABEL_VAL:
-    node->ty = pointer_to(ty_void);
-    return;
-  case ND_CAS:
-    add_type(node->cas_addr);
-    add_type(node->cas_old);
-    add_type(node->cas_new);
-    node->ty = ty_bool;
-
-    if (node->cas_addr->ty->kind != TY_PTR) {
-      error_tok(node->cas_addr->tok, "pointer expected");
-    }
-    if (node->cas_old->ty->kind != TY_PTR) {
-      error_tok(node->cas_old->tok, "pointer expected");
-    }
-    return;
-  case ND_EXCH:
-    if (node->lhs->ty->kind != TY_PTR) {
-      error_tok(node->lhs->tok, "pointer expected");
-    }
-    node->ty = node->lhs->ty->base;
     return;
   default:
     break;

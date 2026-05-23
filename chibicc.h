@@ -168,7 +168,6 @@ struct Obj {
 
   // Global variable
   bool is_tentative;
-  bool is_tls;
   char *init_data;
   int init_data_size;
   Relocation *rel;
@@ -246,20 +245,14 @@ typedef enum {
   ND_BREAK,     // "break"
   ND_CONTINUE,  // "continue"
   ND_GOTO,      // "goto"
-  ND_GOTO_EXPR, // "goto" labels-as-values
   ND_LABEL,     // Labeled statement
-  ND_LABEL_VAL, // [GNU] Labels-as-values
   ND_FUNCALL,   // Function call
   ND_EXPR_STMT, // Expression statement
   ND_STMT_EXPR, // Statement expression
   ND_VAR,       // Variable
-  ND_VLA_PTR,   // VLA designator
   ND_NUM,       // Integer
   ND_CAST,      // Type cast
   ND_MEMZERO,   // Zero-clear a stack variable
-  ND_ASM,       // "asm"
-  ND_CAS,       // Atomic compare-and-swap
-  ND_EXCH,      // Atomic exchange
   ND_BKPT,      // Software breakpoint.
 } NodeKind;
 
@@ -310,15 +303,6 @@ struct Node {
   // "asm" string literal
   char *asm_str;
 
-  // Atomic compare-and-swap
-  Node *cas_addr;
-  Node *cas_old;
-  Node *cas_new;
-
-  // Atomic op= operators
-  Obj *atomic_addr;
-  Node *atomic_expr;
-
   // va_arg
   Type *arg_ty;
 
@@ -327,7 +311,6 @@ struct Node {
 
   // Numeric literal
   int64_t val;
-  // double fval;
 };
 
 Node *new_cast(Node *expr, Type *ty);
@@ -351,13 +334,10 @@ typedef enum {
   TY_INT,
   TY_LONG,
   TY_LONGLONG,
-  // TY_FLOAT,
-  // TY_DOUBLE,
   TY_ENUM,
   TY_PTR,
   TY_FUNC,
   TY_ARRAY,
-  TY_VLA, // variable-length array
   TY_STRUCT,
   TY_UNION,
 } TypeKind;
@@ -367,7 +347,6 @@ struct Type {
   int size;         // sizeof() value
   int align;        // alignment
   bool is_unsigned; // unsigned or signed
-  bool is_atomic;   // true if _Atomic
   Type *origin;     // for type compatibility check
 
   Type *gc_next;    // next node (for cleanup).
@@ -388,10 +367,6 @@ struct Type {
 
   // Array
   int array_len;
-
-  // Variable-length array
-  Node *vla_len; // # of elements
-  Obj *vla_size; // sizeof() value
 
   // Struct
   Member *members;
@@ -436,9 +411,6 @@ extern Type *ty_uint;
 extern Type *ty_ulong;
 extern Type *ty_ulonglong;
 
-// extern Type *ty_float;
-// extern Type *ty_double;
-
 bool is_integer(Type *ty);
 // bool is_flonum(Type *ty);
 bool is_numeric(Type *ty);
@@ -447,7 +419,6 @@ Type *copy_type(Type *ty);
 Type *pointer_to(Type *base);
 Type *func_type(Type *return_ty);
 Type *array_of(Type *base, int size);
-Type *vla_of(Type *base, Node *expr);
 Type *enum_type(void);
 Type *struct_type(void);
 void add_type(Node *node);

@@ -1,5 +1,4 @@
 #include "test.h"
-#include <float.h>
 #include <stdalign.h>
 #include <stdarg.h>
 #include <stdbool.h>
