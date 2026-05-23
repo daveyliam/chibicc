@@ -340,8 +340,7 @@ static void clear_initializer(Initializer *init) {
     int children_length = 0;
     if (ty->kind == TY_ARRAY) {
       children_length = ty->array_len;
-    }
-    else if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+    } else if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
       for (Member *mem = ty->members; mem; mem = mem->next) {
         children_length++;
       }
@@ -3834,7 +3833,7 @@ static void obj_clear(Obj *obj) {
     lvar = lvar_next;
   }
 
-  // Free initialiser data.
+  // Free global var initialization data.
   if (obj->init_data) {
     free(obj->init_data);
   }

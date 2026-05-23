@@ -176,12 +176,12 @@ static Token *copy_token(Token *tok) {
 }
 
 static Token *copy_tokens(Token *tok) {
-    Token head = {};
-    Token *cur = &head;
-    for (; tok; tok = tok->next) {
-        cur = cur->next = copy_token(tok);
-    }
-    return head.next;
+  Token head = {};
+  Token *cur = &head;
+  for (; tok; tok = tok->next) {
+    cur = cur->next = copy_token(tok);
+  }
+  return head.next;
 }
 
 static Token *add_hideset(Token *tok, Hideset *hs) {
@@ -265,7 +265,7 @@ static Token *skip_cond_incl2(Token *tok, bool consume) {
   while (tok->kind != TK_EOF) {
     if (is_hash(tok) &&
         (equal(tok->next, "if") || equal(tok->next, "ifdef") || equal(tok->next, "ifndef"))) {
-      if (consume) { 
+      if (consume) {
         tok = advance(tok);
         tok = advance(tok);
         tok = skip_cond_incl2(tok, true);
@@ -298,7 +298,7 @@ static Token *skip_cond_incl(Token *tok, bool consume) {
   while (tok->kind != TK_EOF) {
     if (is_hash(tok) &&
         (equal(tok->next, "if") || equal(tok->next, "ifdef") || equal(tok->next, "ifndef"))) {
-      if (consume) { 
+      if (consume) {
         tok = advance(tok);
         tok = advance(tok);
         tok = skip_cond_incl2(tok, true);
@@ -1653,7 +1653,7 @@ void preprocess_end_unit(void) {
     free(entry->val);
   }
   hashmap_clear(&include_cache);
-  
+
   iter = 0;
   entry = NULL;
   while (hashmap_next(&include_guards, &iter, &entry)) {
