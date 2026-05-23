@@ -144,7 +144,6 @@ static int64_t eval2(Node *node, Obj **gvar);
 static int64_t eval_rval(Node *node, Obj **gvar);
 static Node *assign(Token **rest, Token *tok);
 static Node *logor(Token **rest, Token *tok);
-// static double eval_double(Node *node);
 static Node *conditional(Token **rest, Token *tok);
 static Node *logand(Token **rest, Token *tok);
 static Node *bitor(Token **rest, Token *tok);
@@ -1862,10 +1861,6 @@ static int64_t eval(Node *node) { return eval2(node, NULL); }
 static int64_t eval2(Node *node, Obj **gvar) {
   add_type(node);
 
-  // if (is_flonum(node->ty)) {
-  //   return eval_double(node);
-  // }
-
   switch (node->kind) {
   case ND_ADD: {
     int64_t lhs = eval2(node->lhs, gvar);
@@ -2807,12 +2802,6 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
       }
       param_ty = param_ty->next;
     }
-    // else if (arg->ty->kind == TY_FLOAT) {
-    //   // If parameter type is omitted (e.g. in "..."), float
-    //   // arguments are promoted to double.
-    //   // TODO : is this target specific behaviour?
-    //   arg = new_cast(arg, ty_double);
-    // }
 
     cur = cur->next = arg;
   }

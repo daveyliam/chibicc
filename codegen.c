@@ -592,10 +592,6 @@ static void load(Type *ty) {
     // This is where "array is automatically converted to a pointer to
     // the first element of the array in C" occurs.
     return;
-  // case TY_FLOAT:
-  // case TY_DOUBLE:
-  //   error("cannot load float or double types");
-  //   return;
   default:
     break;
   }
@@ -633,10 +629,6 @@ static void store(Type *ty) {
     emit_pop_r1();
     emit_pop_r0();
     return;
-  // case TY_FLOAT:
-  // case TY_DOUBLE:
-  //   error("cannot store type");
-  //   return;
   default:
     break;
   }
@@ -713,13 +705,6 @@ static void gen_cast(Type *from, Type *to) {
     return;
   }
 
-  // if (from->kind == TY_FLOAT || from->kind == TY_DOUBLE) {
-  //   error("casts from floating point types unsupported");
-  // }
-  // if (to->kind == TY_FLOAT || to->kind == TY_DOUBLE) {
-  //   error("casts to floating point types unsupported");
-  // }
-
   gen_integer_cast(to);
 }
 
@@ -757,16 +742,8 @@ static void gen_expr(Node *node) {
   case ND_NULL_EXPR:
     return;
   case ND_NUM: {
-    switch (node->ty->kind) {
-    // case TY_FLOAT:
-    // case TY_DOUBLE:
-    //   error_tok(node->tok, "float literals unsupported");
-    //   return;
-    default:
-      // TODO : is this correct? do we need to cast node->val at compile time?
-      emit_mov_r0_imm(node->val);
-      break;
-    }
+    // TODO : is this correct? do we need to cast node->val at compile time?
+    emit_mov_r0_imm(node->val);
     return;
   }
   case ND_VAR:
@@ -829,10 +806,6 @@ static void gen_expr(Node *node) {
   }
   case ND_NEG: {
     switch (node->ty->kind) {
-    // case TY_FLOAT:
-    // case TY_DOUBLE:
-    //   error_tok(node->tok, "float negation unsupported");
-    //   return;
     default:
       gen_expr(node->lhs);
       emit_neg();
@@ -966,10 +939,6 @@ static void gen_expr(Node *node) {
   }
 
   switch (node->lhs->ty->kind) {
-  // case TY_FLOAT:
-  // case TY_DOUBLE:
-  //   error_tok(node->tok, "invalid floating point expression");
-  //   return;
   case TY_PTR:
   case TY_FUNC:
   case TY_ARRAY: {

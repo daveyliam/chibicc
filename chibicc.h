@@ -89,7 +89,6 @@ struct Token {
   TokenKind kind; // Token kind
   Token *next;    // Next token
   int64_t val;    // If kind is TK_NUM, its value
-  // double fval;    // If kind is TK_NUM, its value
   char *loc;      // Token location
   int len;        // Token length
   Type *ty;       // Used if TK_NUM or TK_STR
