@@ -267,6 +267,7 @@ typedef enum {
 struct Node {
   NodeKind kind; // Node kind
   Node *next;    // Next node
+  Node *gc_next; // Next node (for cleanup).
   Type *ty;      // Type, e.g. int or pointer to int
   Token *tok;    // Representative token
 
@@ -332,7 +333,7 @@ struct Node {
 Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
 Obj *parse(Token *tok);
-void prog_free(Prog *prog);
+void prog_clear(Prog *prog);
 void parse_init(void);
 void parse_destroy(void);
 void parse_begin_unit(void);
@@ -369,6 +370,8 @@ struct Type {
   bool is_atomic;   // true if _Atomic
   Type *origin;     // for type compatibility check
 
+  Type *gc_next;    // next node (for cleanup).
+
   // Pointer-to or array-of type. We intentionally use the same member
   // to represent pointer/array duality in C.
   //
@@ -400,9 +403,6 @@ struct Type {
   Type *params;
   bool is_variadic;
   Type *next;
-
-  // WASM type index.
-  int wasm_idx;
 };
 
 // Struct member
@@ -460,6 +460,8 @@ struct Prog {
   Prog *next;
   Token *tok;
   Obj *obj;
+  Node *node_gc_root;
+  Type *type_gc_root;
   char *base_file;
   int index;
 };
@@ -503,16 +505,6 @@ void hashmap_delete(HashMap *map, char *key);
 void hashmap_delete2(HashMap *map, char *key, int keylen);
 bool hashmap_next(HashMap *map, int *iter, HashEntry **entry_out);
 void hashmap_clear(HashMap *map);
-
-//
-// gc.c
-//
-
-void *gc_alloc(size_t size);
-char *gc_strndup(const char *s, size_t n);
-char *gc_strdup(const char *s);
-void gc_free(void *r);
-void gc_free_all(void);
 
 //
 // main.c

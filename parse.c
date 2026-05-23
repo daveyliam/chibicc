@@ -216,9 +216,11 @@ static Type *find_tag(Token *tok) {
 }
 
 static Node *new_node(NodeKind kind, Token *tok) {
-  Node *node = gc_alloc(sizeof(Node));
+  Node *node = calloc(1, sizeof(Node));
   node->kind = kind;
   node->tok = tok;
+  node->gc_next = current_prog->node_gc_root;
+  current_prog->node_gc_root = node;
   return node;
 }
 
@@ -270,11 +272,13 @@ static Node *new_vla_ptr(Obj *var, Token *tok) {
 Node *new_cast(Node *expr, Type *ty) {
   add_type(expr);
 
-  Node *node = gc_alloc(sizeof(Node));
+  Node *node = calloc(1, sizeof(Node));
   node->kind = ND_CAST;
   node->tok = expr->tok;
   node->lhs = expr;
   node->ty = copy_type(ty);
+  node->gc_next = current_prog->node_gc_root;
+  current_prog->node_gc_root = node;
   return node;
 }
 
@@ -355,7 +359,7 @@ static void clear_initializer(Initializer *init) {
 
 static Obj *new_var(char *name, Type *ty) {
   Obj *var = calloc(1, sizeof(Obj));
-  var->name = gc_strdup(name);
+  var->name = strdup(name);
   var->ty = ty;
   var->align = ty->align;
   push_scope(var->name)->var = var;
@@ -392,7 +396,9 @@ static Obj *new_string_literal(char *p, Type *ty) {
   char *name = format(".str.%d", anon_string_literal_id_next++);
   Obj *var = new_gvar(name, ty);
   free(name);
-  var->init_data = p;
+  char *buf = calloc(ty->size, 1);
+  memcpy(buf, p, ty->size);
+  var->init_data = buf;
   var->init_data_size = ty->size;
   return var;
 }
@@ -401,7 +407,7 @@ static char *get_ident(Token *tok) {
   if (tok->kind != TK_IDENT) {
     error_tok(tok, "expected an identifier");
   }
-  return gc_strndup(tok->loc, tok->len);
+  return strndup(tok->loc, tok->len);
 }
 
 static Type *find_typedef(Token *tok) {
@@ -893,6 +899,8 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     VarScope *sc = push_scope(name);
     sc->enum_ty = ty;
     sc->enum_val = val++;
+
+    free(name);
   }
 
   if (tag) {
@@ -976,7 +984,9 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
     if (attr && attr->is_static) {
       // static local variable
       Obj *var = new_anon_gvar(ty);
-      push_scope(get_ident(ty->name))->var = var;
+      char *name = get_ident(ty->name);
+      push_scope(name)->var = var;
+      free(name);
       if (equal(tok, "=")) {
         gvar_initializer(&tok, tok->next, var);
       }
@@ -996,7 +1006,9 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       // Variable length arrays (VLAs) are translated to alloca() calls.
       // For example, `int x[n+2]` is translated to `tmp = n + 2,
       // x = alloca(tmp)`.
-      Obj *var = new_lvar(get_ident(ty->name), ty);
+      char *name = get_ident(ty->name);
+      Obj *var = new_lvar(name, ty);
+      free(name);
       Token *tok = ty->name;
       Node *expr = new_binary(
           ND_ASSIGN, new_vla_ptr(var, tok), new_alloca(new_var_node(ty->vla_size, tok)), tok
@@ -1006,7 +1018,9 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       continue;
     }
 
-    Obj *var = new_lvar(get_ident(ty->name), ty);
+    char *name = get_ident(ty->name);
+    Obj *var = new_lvar(name, ty);
+    free(name);
     if (attr && attr->align) {
       var->align = attr->align;
     }
@@ -1666,7 +1680,7 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
 
   Relocation head = {};
   int init_data_size = get_init_size(init);
-  char *buf = gc_alloc(init_data_size);
+  char *buf = calloc(init_data_size, 1);
   write_gvar_data(&head, init, var->ty, buf, 0);
   var->init_data = buf;
   var->init_data_size = init_data_size;
@@ -1922,7 +1936,7 @@ static Node *stmt(Token **rest, Token *tok) {
 
   if (tok->kind == TK_IDENT && equal(tok->next, ":")) {
     Node *node = new_node(ND_LABEL, tok);
-    node->label = gc_strndup(tok->loc, tok->len);
+    node->label = strndup(tok->loc, tok->len);
     node->lhs = stmt(rest, tok->next->next);
     node->goto_next = labels;
     labels = node;
@@ -2798,7 +2812,7 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
 
     // Anonymous struct member
     if ((basety->kind == TY_STRUCT || basety->kind == TY_UNION) && consume(&tok, tok, ";")) {
-      Member *mem = gc_alloc(sizeof(Member));
+      Member *mem = calloc(1, sizeof(Member));
       mem->ty = basety;
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
@@ -2813,7 +2827,7 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       }
       first = false;
 
-      Member *mem = gc_alloc(sizeof(Member));
+      Member *mem = calloc(1, sizeof(Member));
       mem->ty = declarator(&tok, tok, basety);
       mem->name = mem->ty->name;
       mem->idx = idx++;
@@ -2911,7 +2925,11 @@ static Type *struct_union_decl(Token **rest, Token *tok) {
     // Otherwise, register the struct type.
     Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
     if (ty2) {
+      // Overwrite, but preserve original gc_next pointer.
+      Type *ty2_gc_next = ty2->gc_next;
       *ty2 = *ty;
+      ty2->gc_next = ty2_gc_next;
+      ty->members = NULL;
       return ty2;
     }
 
@@ -3437,7 +3455,9 @@ static Token *parse_typedef(Token *tok, Type *basety) {
     if (!ty->name) {
       error_tok(ty->name_pos, "typedef name omitted");
     }
-    push_scope(get_ident(ty->name))->type_def = ty;
+    char *name = get_ident(ty->name);
+    push_scope(name)->type_def = ty;
+    free(name);
   }
   return tok;
 }
@@ -3453,7 +3473,9 @@ static void create_param_lvars(Type *param) {
     if (!param->name) {
       error_tok(param->name_pos, "parameter name omitted");
     }
-    new_lvar(get_ident(param->name), param);
+    char *name = get_ident(param->name);
+    new_lvar(name, param);
+    free(name);
   }
 }
 
@@ -3533,6 +3555,7 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
     fn->is_inline = attr->is_inline;
     fn->is_noreturn = attr->is_noreturn;
   }
+  free(name_str);
 
   fn->is_root = !(fn->is_static && fn->is_inline);
 
@@ -3615,6 +3638,8 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
       }
     }
 
+    free(name);
+
     Obj *var = NULL;
     if (var2) {
       if (is_tentative) {
@@ -3628,7 +3653,9 @@ static Token *global_variable(Token *tok, Type *basety, VarAttr *attr) {
       // replace the previous definition.
       var = var2;
     } else {
-      var = new_gvar(get_ident(ty->name), ty);
+      char *name2 = get_ident(ty->name);
+      var = new_gvar(name2, ty);
+      free(name2);
     }
 
     var->is_tentative = is_tentative;
@@ -3766,7 +3793,28 @@ void parse_begin_unit(void) {
   declare_builtin_functions();
 }
 
+static void node_clear(Node *node) {
+  if (node->label != NULL) {
+    free(node->label);
+  }
+  node->label = NULL;
+}
+
+static void type_clear(Type *ty) {
+  for (Member *mem = ty->members; mem;) {
+    Member *mem_next = mem->next;
+    free(mem);
+    mem = mem_next;
+  }
+  ty->members = NULL;
+}
+
 static void obj_clear(Obj *obj) {
+  if (obj->name != NULL) {
+    free(obj->name);
+  }
+  obj->name = NULL;
+
   // Free list of references to function.
   strarray_clear(&obj->refs, false);
 
@@ -3785,9 +3833,18 @@ static void obj_clear(Obj *obj) {
     free(lvar);
     lvar = lvar_next;
   }
+
+  // Free initialiser data.
+  if (obj->init_data) {
+    free(obj->init_data);
+  }
+  obj->init_data = NULL;
+  obj->init_data_size = 0;
+
+  obj->labels = NULL;
 }
 
-void prog_free(Prog *prog) {
+void prog_clear(Prog *prog) {
   // Free vars and functions.
   for (Obj *obj = prog->obj; obj;) {
     Obj *obj_next = obj->next;
@@ -3797,4 +3854,18 @@ void prog_free(Prog *prog) {
   }
   // Free tokens.
   free_token_list(prog->tok);
+  // Free nodes.
+  for (Node *node = prog->node_gc_root; node;) {
+    Node *node_next = node->gc_next;
+    node_clear(node);
+    free(node);
+    node = node_next;
+  }
+  // Free types.
+  for (Type *ty = prog->type_gc_root; ty;) {
+    Type *ty_next = ty->gc_next;
+    type_clear(ty);
+    free(ty);
+    ty = ty_next;
+  }
 }

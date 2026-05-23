@@ -19,10 +19,12 @@ Type *ty_ulonglong = &(Type){TY_LONGLONG, 8, 8, true};
 // Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
 
 static Type *new_type(TypeKind kind, int size, int align) {
-  Type *ty = gc_alloc(sizeof(Type));
+  Type *ty = calloc(1, sizeof(Type));
   ty->kind = kind;
   ty->size = size;
   ty->align = align;
+  ty->gc_next = current_prog->type_gc_root;
+  current_prog->type_gc_root = ty;
   return ty;
 }
 
@@ -96,9 +98,22 @@ bool is_compatible(Type *t1, Type *t2) {
 }
 
 Type *copy_type(Type *ty) {
-  Type *ret = gc_alloc(sizeof(Type));
+  Type *ret = calloc(1, sizeof(Type));
   *ret = *ty;
   ret->origin = ty;
+
+  // Copy members.
+  Member head = {};
+  Member *cur = &head;
+  for (Member *mem = ty->members; mem; mem = mem->next) {
+    Member *mem2 = calloc(1, sizeof(Member));
+    *mem2 = *mem;
+    cur = cur->next = mem2;
+  }
+  ret->members = head.next;
+
+  ret->gc_next = current_prog->type_gc_root;
+  current_prog->type_gc_root = ret;
   return ret;
 }
 

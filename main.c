@@ -240,6 +240,12 @@ int main(int argc, char **argv, char **envp) {
   for (int i = 0; i < input_paths.len; i++) {
     char *input = input_paths.data[i];
 
+    Prog *prog = calloc(1, sizeof(Prog));
+    prog->base_file = input;
+    prog->index = i;
+
+    current_prog = prog;
+
     tokenize_begin_unit();
     preprocess_begin_unit();
     parse_begin_unit();
@@ -248,15 +254,13 @@ int main(int argc, char **argv, char **envp) {
     init_macros();
     add_default_include_paths(argv[0]);
 
-    Prog *prog = calloc(1, sizeof(Prog));
-    prog->base_file = input;
-    prog->index = i;
-
-    current_prog = prog;
-
     Token *tok = NULL;
     Obj *obj = NULL;
     cc1(&tok, &obj);
+
+    parse_end_unit();
+    preprocess_end_unit();
+    tokenize_end_unit();
 
     current_prog = NULL;
 
@@ -264,10 +268,6 @@ int main(int argc, char **argv, char **envp) {
     prog->obj = obj;
     progs_tail->next = prog;
     progs_tail = prog;
-
-    parse_end_unit();
-    preprocess_end_unit();
-    tokenize_end_unit();
   }
 
   // Codegen to temporary output buffer in case we need to
@@ -278,7 +278,7 @@ int main(int argc, char **argv, char **envp) {
   // Free progs.
   for (Prog *prog = progs_head.next; prog;) {
     Prog *prog_next = prog->next;
-    prog_free(prog);
+    prog_clear(prog);
     free(prog);
     prog = prog_next;
   }
@@ -301,8 +301,6 @@ int main(int argc, char **argv, char **envp) {
   strarray_clear(&input_paths, false);
   strarray_clear(&opt_define, false);
   strarray_clear(&opt_include, false);
-
-  gc_free_all();
 
   return 0;
 }
