@@ -200,6 +200,23 @@ size_t strlen(const char *s) {
   return n;
 }
 
+char *strdup(const char *s) {
+  size_t n = strlen(s);
+  char *s2 = calloc(n + 1, 1);
+  memcpy(s2, s, n);
+  return s2;
+}
+
+char *strndup(const char *s, size_t n) {
+  size_t n2 = strlen(s);
+  if (n2 < n) {
+    n = n2;
+  }
+  char *s2 = calloc(n + 1, 1);
+  memcpy(s2, s, n);
+  return s2;
+}
+
 char *strncpy(char *dst, const char *src, size_t n) {
   char *p = dst;
   for (; n; n--) {
