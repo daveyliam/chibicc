@@ -389,11 +389,6 @@ struct Member {
   int idx;
   int align;
   int offset;
-
-  // Bitfield
-  bool is_bitfield;
-  int bit_offset;
-  int bit_width;
 };
 
 extern Type *ty_void;

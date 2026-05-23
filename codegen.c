@@ -774,11 +774,6 @@ static void gen_expr(Node *node) {
     load(node->ty);
     return;
   case ND_MEMBER: {
-    Member *mem = node->member;
-    if (mem->is_bitfield) {
-      error_tok(node->tok, "bitfields unsupported");
-      return;
-    }
     gen_addr(node);
     load(node->ty);
     return;
@@ -791,10 +786,6 @@ static void gen_expr(Node *node) {
     gen_addr(node->lhs);
     return;
   case ND_ASSIGN: {
-    if (node->lhs->kind == ND_MEMBER && node->lhs->member->is_bitfield) {
-      error_tok(node->tok, "bitfields unsupported");
-      return;
-    }
     gen_addr(node->lhs);
     emit_push_r0();
     gen_expr(node->rhs);

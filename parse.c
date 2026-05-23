@@ -170,8 +170,6 @@ static bool is_function(Token *tok);
 static Token *function(Token *tok, Type *basety, VarAttr *attr);
 static Token *global_variable(Token *tok, Type *basety, VarAttr *attr);
 
-static int align_down(int n, int align) { return align_to(n - align + 1, align); }
-
 static void enter_scope(void) {
   Scope *sc = calloc(1, sizeof(Scope));
   sc->next = scope;
@@ -478,8 +476,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         error_tok(tok, "thread local storage not supported");
       }
 
-      if (attr->is_typedef &&
-          attr->is_static + attr->is_extern + attr->is_inline > 1) {
+      if (attr->is_typedef && attr->is_static + attr->is_extern + attr->is_inline > 1) {
         error_tok(
             tok, "typedef may not be used together with static,"
                  " extern, inline, __thread or _Thread_local"
@@ -1447,22 +1444,6 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   return new_binary(ND_COMMA, lhs, rhs, tok);
 }
 
-static uint64_t read_buf(char *buf, int sz) {
-  if (sz == 1) {
-    return *buf;
-  }
-  if (sz == 2) {
-    return *(uint16_t *)buf;
-  }
-  if (sz == 4) {
-    return *(uint32_t *)buf;
-  }
-  if (sz == 8) {
-    return *(uint64_t *)buf;
-  }
-  unreachable();
-}
-
 static void write_buf(char *buf, uint64_t val, int sz) {
   if (sz == 1) {
     *buf = val;
@@ -1490,19 +1471,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   if (ty->kind == TY_STRUCT) {
     for (Member *mem = ty->members; mem; mem = mem->next) {
       Initializer *init_mem = init->children[mem->idx];
-      if (mem->is_bitfield) {
-        Node *expr = init_mem->expr;
-        if (!expr) {
-          break;
-        }
-
-        char *loc = buf + offset + mem->offset;
-        uint64_t oldval = read_buf(loc, mem->ty->size);
-        uint64_t newval = eval(expr);
-        uint64_t mask = (1L << mem->bit_width) - 1;
-        uint64_t combined = oldval | ((newval & mask) << mem->bit_offset);
-        write_buf(loc, combined, mem->ty->size);
-      } else if (ty->is_flexible && mem->next == NULL) {
+      if (ty->is_flexible && mem->next == NULL) {
         // Note that for structs only the last member can be a
         // flexible array.
         // It is an error to try to initialize a struct with a nested flexible
@@ -2045,34 +2014,11 @@ int64_t const_expr(Token **rest, Token *tok) {
 
 // Convert op= operators to expressions containing an assignment.
 //
-// In general, `A op= C` is converted to ``tmp = &A, *tmp = *tmp op B`.
-// However, if a given expression is of form `A.x op= C`, the input is
-// converted to `tmp = &A, (*tmp).x = (*tmp).x op C` to handle assignments
-// to bitfields.
+// `A op= C` is converted to ``tmp = &A, *tmp = *tmp op B`.
 static Node *to_assign(Node *binary) {
   add_type(binary->lhs);
   add_type(binary->rhs);
   Token *tok = binary->tok;
-
-  // Convert `A.x op= C` to `tmp = &A, (*tmp).x = (*tmp).x op C`.
-  if (binary->lhs->kind == ND_MEMBER) {
-    Obj *var = new_lvar("", pointer_to(binary->lhs->lhs->ty));
-
-    Node *expr1 = new_binary(
-        ND_ASSIGN, new_var_node(var, tok), new_unary(ND_ADDR, binary->lhs->lhs, tok), tok
-    );
-
-    Node *expr2 = new_unary(ND_MEMBER, new_unary(ND_DEREF, new_var_node(var, tok), tok), tok);
-    expr2->member = binary->lhs->member;
-
-    Node *expr3 = new_unary(ND_MEMBER, new_unary(ND_DEREF, new_var_node(var, tok), tok), tok);
-    expr3->member = binary->lhs->member;
-
-    Node *expr4 =
-        new_binary(ND_ASSIGN, expr2, new_binary(binary->kind, expr3, binary->rhs, tok), tok);
-
-    return new_binary(ND_COMMA, expr1, expr4, tok);
-  }
 
   // Convert `A op= B` to ``tmp = &A, *tmp = *tmp op B`.
   Obj *var = new_lvar("", pointer_to(binary->lhs->ty));
@@ -2449,9 +2395,6 @@ static Node *unary(Token **rest, Token *tok) {
   if (equal(tok, "&")) {
     Node *lhs = cast(rest, tok->next);
     add_type(lhs);
-    if (lhs->kind == ND_MEMBER && lhs->member->is_bitfield) {
-      error_tok(tok, "cannot take address of bitfield");
-    }
     return new_unary(ND_ADDR, lhs, tok);
   }
 
@@ -2528,9 +2471,8 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
 
-      if (consume(&tok, tok, ":")) {
-        mem->is_bitfield = true;
-        mem->bit_width = const_expr(&tok, tok);
+      if (equal(tok, ":")) {
+        error_tok(tok, "bitfields not supported");
       }
 
       cur = cur->next = mem;
@@ -2647,26 +2589,11 @@ static Type *struct_decl(Token **rest, Token *tok) {
   int bits = 0;
 
   for (Member *mem = ty->members; mem; mem = mem->next) {
-    if (mem->is_bitfield && mem->bit_width == 0) {
-      // Zero-width anonymous bitfield has a special meaning.
-      // It affects only alignment.
-      bits = align_to(bits, mem->ty->size * 8);
-    } else if (mem->is_bitfield) {
-      int sz = mem->ty->size;
-      if (bits / (sz * 8) != (bits + mem->bit_width - 1) / (sz * 8)) {
-        bits = align_to(bits, sz * 8);
-      }
-
-      mem->offset = align_down(bits / 8, sz);
-      mem->bit_offset = bits % (sz * 8);
-      bits += mem->bit_width;
-    } else {
-      if (!ty->is_packed) {
-        bits = align_to(bits, mem->align * 8);
-      }
-      mem->offset = bits / 8;
-      bits += mem->ty->size * 8;
+    if (!ty->is_packed) {
+      bits = align_to(bits, mem->align * 8);
     }
+    mem->offset = bits / 8;
+    bits += mem->ty->size * 8;
 
     if (!ty->is_packed && ty->align < mem->align) {
       ty->align = mem->align;
