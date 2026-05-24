@@ -2,8 +2,8 @@
 
 ## Native x86-64 Codegen
 
-* Changed the code generator to produce native x86-64 ELF files directly
-  (rather than producing assembly text).
+* Changed the code generator to produce native x86-64 ELF files directly,
+  rather than producing assembly text.
 * Added a basic libc implementation with just enough functionality to
   run the compiler.
 * Lots of limitations, and a few regressions from rui314/chibicc:
@@ -11,10 +11,11 @@
   - Struct bitfields no longer work.
   - Thread Local Storage no longer works.
   - Atomics no longer work.
+  - The alloca builtin and VLAs no longer work.
   - Probably other things too.
 * However, it can still self-bootstrap, and now uses no external code
   to do so. It does not need an assembler, linker, or libc anymore.
-* Can probably fix all the regressions with a bit of work, but i've reached
+* Can probably fix all the regressions with a bit of work, but I've reached
   my initial goal of self-bootstrapping without an external toolchain, so
   doubt I will do that work myself.
 

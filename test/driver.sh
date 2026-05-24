@@ -16,7 +16,7 @@ check() {
 # -o
 rm -f $tmp/out
 echo 'void _start() {}' > $tmp/out.c
-./chibicc -o $tmp/out $tmp/out.c
+$chibicc -o $tmp/out $tmp/out.c
 [ -f $tmp/out ]
 check -o
 

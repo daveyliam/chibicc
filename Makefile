@@ -15,17 +15,17 @@ $(shell mkdir -p build/test build/stage2/test build/stage3)
 
 # Stage 1
 
-chibicc: $(OBJS)
+build/chibicc: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(OBJS): build/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-build/test/%.exe: test/%.c chibicc test/common.c libc/libc.c
-	./chibicc -Itest -DTEST_NAME='"$<"' -o build/test/$*.exe \
+build/test/%.exe: test/%.c build/chibicc test/common.c libc/libc.c
+	./build/chibicc -Iinclude -Itest -DTEST_NAME='"$<"' -o build/test/$*.exe \
 	  $< test/common.c libc/libc.c
 
-test: $(TESTS) | chibicc
+test: $(TESTS) | build/chibicc
 	fail=0; \
 	for i in $^; do \
 	  if ! ./$$i ; then \
@@ -36,7 +36,7 @@ test: $(TESTS) | chibicc
 	  echo "$$fail tests failed"; \
 	  exit 1; \
 	fi
-	test/driver.sh ./chibicc
+	test/driver.sh ./build/chibicc
 
 # Stage 2
 
@@ -83,6 +83,6 @@ format:
 	done
 
 clean:
-	rm -rf chibicc tmp* build
+	rm -rf tmp* build
 
 .PHONY: test test-stage2 test-stage3 clean format
