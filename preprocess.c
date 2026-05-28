@@ -184,20 +184,14 @@ static Token *copy_tokens(Token *tok) {
   return head.next;
 }
 
-static Token *add_hideset(Token *tok, Hideset *hs) {
-  Token head = {};
-  Token *cur = &head;
-
+static void add_hideset(Token *tok, Hideset *hs) {
   for (; tok; tok = tok->next) {
-    Token *t = copy_token(tok);
-    Hideset *hs2 = hideset_union(t->hideset, hs);
-    if (t->hideset) {
-      free_hideset(t->hideset);
+    Hideset *hs2 = hideset_union(tok->hideset, hs);
+    if (tok->hideset) {
+      free_hideset(tok->hideset);
     }
-    t->hideset = hs2;
-    cur = cur->next = t;
+    tok->hideset = hs2;
   }
-  return head.next;
 }
 
 // Copies all tokens in tok1 and joins to the left of tok2.
@@ -236,7 +230,8 @@ static Token *skip_line_and_free(Token *tok) {
   return tok;
 }
 
-// Ensure that the current token is `op`.
+// Ensure that the current token is `op`, and if so free it and return the
+// next token.
 static Token *skip_and_free(Token *tok, char *op) {
   if (!equal(tok, op)) {
     error_tok(tok, "expected '%s'", op);
@@ -244,6 +239,8 @@ static Token *skip_and_free(Token *tok, char *op) {
   return advance(tok);
 }
 
+// Skip and free tokens until the token is `end` (pointer equality).
+// Does not free the `end` token.
 static Token *skip_and_free_until(Token *tok, Token *end) {
   while (tok != end && tok->kind != TK_EOF) {
     tok = advance(tok);
@@ -294,7 +291,7 @@ static Token *skip_cond_incl2(Token *tok, bool consume) {
 
 // Skip until next `#else`, `#elif` or `#endif`.
 // Nested `#if` and `#endif` are skipped.
-static Token *skip_cond_incl(Token *tok, bool consume) {
+static Token *_skip_cond_incl(Token *tok, bool consume) {
   while (tok->kind != TK_EOF) {
     if (is_hash(tok) &&
         (equal(tok->next, "if") || equal(tok->next, "ifdef") || equal(tok->next, "ifndef"))) {
@@ -319,6 +316,14 @@ static Token *skip_cond_incl(Token *tok, bool consume) {
     }
   }
   return tok;
+}
+
+static Token *skip_cond_incl(Token *tok) {
+  return _skip_cond_incl(tok, true);
+}
+
+static Token *skip_cond_incl_nofree(Token *tok) {
+  return _skip_cond_incl(tok, false);
 }
 
 // Double-quote a given string and returns it.
@@ -586,7 +591,7 @@ static void read_macro_definition(Token **rest, Token *tok) {
   free(name);
 }
 
-static MacroArg *read_macro_arg_one(Token **rest, Token *tok, bool read_rest, bool consume) {
+static MacroArg *read_macro_arg_one(Token **rest, Token *tok, bool read_rest) {
   Token head = {};
   Token *cur = &head;
   int level = 0;
@@ -609,11 +614,7 @@ static MacroArg *read_macro_arg_one(Token **rest, Token *tok, bool read_rest, bo
       level--;
     }
 
-    if (consume) {
-      cur = cur->next = tok;
-    } else {
-      cur = cur->next = copy_token(tok);
-    }
+    cur = cur->next = tok;
     tok = tok->next;
   }
 
@@ -638,7 +639,7 @@ static MacroArg *read_macro_args(Token **rest, Token *tok, MacroParam *params, c
     if (cur != &head) {
       tok = skip_and_free(tok, ",");
     }
-    cur = cur->next = read_macro_arg_one(&tok, tok, false, true);
+    cur = cur->next = read_macro_arg_one(&tok, tok, false);
     cur->name = pp->name;
   }
 
@@ -651,7 +652,7 @@ static MacroArg *read_macro_args(Token **rest, Token *tok, MacroParam *params, c
       if (pp != params) {
         tok = skip_and_free(tok, ",");
       }
-      arg = read_macro_arg_one(&tok, tok, true, true);
+      arg = read_macro_arg_one(&tok, tok, true);
     }
     arg->name = va_args_name;
     arg->is_va_args = true;
@@ -678,6 +679,7 @@ static MacroArg *find_arg(MacroArg *args, Token *tok) {
 }
 
 // Concatenates all tokens in `tok` and returns a new string.
+// Does not free input tokens.
 static char *join_tokens(Token *tok, Token *end) {
   // Compute the length of the resulting token.
   int len = 1;
@@ -705,6 +707,7 @@ static char *join_tokens(Token *tok, Token *end) {
 
 // Concatenates all tokens in `arg` and returns a new string token.
 // This function is used for the stringizing operator (#).
+// Does not free input tokens.
 static Token *stringize(Token *hash, Token *arg) {
   // Create a new string token. We need to set some value to its
   // source location for error reporting function, so we use a macro
@@ -716,6 +719,7 @@ static Token *stringize(Token *hash, Token *arg) {
 }
 
 // Concatenate two tokens to create a new token.
+// Does not free input tokens.
 static Token *paste(Token *lhs, Token *rhs) {
   // Paste the two tokens.
   ByteArray arr = {};
@@ -758,7 +762,7 @@ static void free_macro_args_list(MacroArg *args) {
 }
 
 // Replace func-like macro parameters with given arguments.
-// Does NOT free input tokens as `tok` is the shared func-like macro body tokens.
+// Consumes all input tokens.
 static Token *subst(Token *tok, MacroArg *args) {
   Token head = {};
   Token *cur = &head;
@@ -776,21 +780,25 @@ static Token *subst(Token *tok, MacroArg *args) {
       str_tok->next = NULL;
 
       cur = cur->next = str_tok;
-      tok = tok->next->next;
+      tok = advance(tok);
+      tok = advance(tok);
       continue;
     }
 
     // [GNU] If __VA_ARG__ is empty, `,##__VA_ARGS__` is expanded
-    // to the empty token list. Otherwise, its expaned to `,` and
+    // to the empty token list. Otherwise, its expanded to `,` and
     // __VA_ARGS__.
     if (equal(tok, ",") && equal(tok->next, "##")) {
       MacroArg *arg = find_arg(args, tok->next->next);
       if (arg && arg->is_va_args) {
         if (arg->tok->kind == TK_EOF) {
-          tok = tok->next->next->next;
+          tok = advance(tok);
+          tok = advance(tok);
+          tok = advance(tok);
         } else {
           cur = cur->next = copy_token(tok);
-          tok = tok->next->next;
+          tok = advance(tok);
+          tok = advance(tok);
         }
         continue;
       }
@@ -820,7 +828,8 @@ static Token *subst(Token *tok, MacroArg *args) {
             cur = cur->next = copy_token(t);
           }
         }
-        tok = tok->next->next;
+        tok = advance(tok);
+        tok = advance(tok);
         continue;
       }
 
@@ -830,7 +839,8 @@ static Token *subst(Token *tok, MacroArg *args) {
       paste_tok->str = NULL;
       paste_tok->hideset = NULL;
       free_token_list(paste_tok);
-      tok = tok->next->next;
+      tok = advance(tok);
+      tok = advance(tok);
       continue;
     }
 
@@ -848,21 +858,25 @@ static Token *subst(Token *tok, MacroArg *args) {
         } else {
           cur = cur->next = copy_token(rhs);
         }
-        tok = rhs->next;
+        tok = advance(tok);
+        tok = advance(tok);
+        tok = advance(tok);
         continue;
       }
 
       for (Token *t = arg->tok; t->kind != TK_EOF; t = t->next) {
         cur = cur->next = copy_token(t);
       }
-      tok = tok->next;
+      tok = advance(tok);
       continue;
     }
 
     // If __VA_ARG__ is empty, __VA_OPT__(x) is expanded to the
     // empty token list. Otherwise, __VA_OPT__(x) is expanded to x.
     if (equal(tok, "__VA_OPT__") && equal(tok->next, "(")) {
-      MacroArg *arg = read_macro_arg_one(&tok, tok->next->next, true, false);
+      tok = advance(tok);
+      tok = advance(tok);
+      MacroArg *arg = read_macro_arg_one(&tok, tok, true);
       if (has_varargs(args)) {
         Token *t;
         for (t = arg->tok; t->kind != TK_EOF; t = t->next) {
@@ -872,7 +886,7 @@ static Token *subst(Token *tok, MacroArg *args) {
         free_token(t);
       }
       free_macro_arg(arg);
-      tok = skip(tok, ")");
+      tok = skip_and_free(tok, ")");
       continue;
     }
 
@@ -886,17 +900,19 @@ static Token *subst(Token *tok, MacroArg *args) {
         cur = cur->next = t;
       }
       free_token(t);
-      tok = tok->next;
+      tok = advance(tok);
       continue;
     }
 
     // Handle a non-macro token.
-    cur = cur->next = copy_token(tok);
+    cur = cur->next = tok;
     tok = tok->next;
     continue;
   }
 
-  cur->next = copy_token(tok);
+  // Add EOF token.
+  cur->next = tok;
+
   return head.next;
 }
 
@@ -928,7 +944,8 @@ static bool expand_macro(Token **rest, Token *tok) {
     Hideset *hs2 = new_hideset(m->name);
     Hideset *hs = hideset_union(tok->hideset, hs2);
     free_hideset(hs2);
-    Token *body = add_hideset(m->body, hs);
+    Token *body = copy_tokens(m->body);
+    add_hideset(body, hs);
     free_hideset(hs);
     for (Token *t = body; t->kind != TK_EOF; t = t->next) {
       t->is_expanded = true;
@@ -970,14 +987,14 @@ static bool expand_macro(Token **rest, Token *tok) {
   free_hideset(hs1);
   free_hideset(hs2);
 
-  Token *body = subst(m->body, args);
+  Token *body = copy_tokens(m->body);
+  body = subst(body, args);
   free_macro_args_list(args);
 
-  Token *body2 = add_hideset(body, hs);
-  free_token_list(body);
+  add_hideset(body, hs);
   free_hideset(hs);
 
-  for (Token *t = body2; t->kind != TK_EOF; t = t->next) {
+  for (Token *t = body; t->kind != TK_EOF; t = t->next) {
     t->is_expanded = true;
     if (macro_token->origin_file != NULL) {
       t->origin_file = macro_token->origin_file;
@@ -988,11 +1005,11 @@ static bool expand_macro(Token **rest, Token *tok) {
     }
   }
   tok = advance(tok);
-  *rest = append(body2, tok);
+  *rest = append(body, tok);
   (*rest)->at_bol = macro_token->at_bol;
   (*rest)->has_space = macro_token->has_space;
   free_token(macro_token);
-  free_token_list(body2);
+  free_token_list(body);
   return true;
 }
 
@@ -1117,7 +1134,7 @@ static char *detect_include_guard(Token *tok) {
     }
 
     if (equal(tok, "if") || equal(tok, "ifdef") || equal(tok, "ifndef")) {
-      tok = skip_cond_incl(tok->next, false);
+      tok = skip_cond_incl_nofree(tok->next);
     } else {
       tok = tok->next;
     }
@@ -1281,7 +1298,7 @@ static Token *preprocess2(Token *tok) {
       long val = eval_const_expr(&tok, tok);
       push_cond_incl(hash_tok, val);
       if (!val) {
-        tok = skip_cond_incl(tok, true);
+        tok = skip_cond_incl(tok);
       }
       free_token(hash_tok);
       continue;
@@ -1294,7 +1311,7 @@ static Token *preprocess2(Token *tok) {
       tok = advance(tok);
       tok = skip_line_and_free(tok);
       if (!defined) {
-        tok = skip_cond_incl(tok, true);
+        tok = skip_cond_incl(tok);
       }
       free_token(hash_tok);
       continue;
@@ -1307,7 +1324,7 @@ static Token *preprocess2(Token *tok) {
       tok = advance(tok);
       tok = skip_line_and_free(tok);
       if (defined) {
-        tok = skip_cond_incl(tok, true);
+        tok = skip_cond_incl(tok);
       }
       free_token(hash_tok);
       continue;
@@ -1323,7 +1340,7 @@ static Token *preprocess2(Token *tok) {
       if (!cond_incl->included && eval_const_expr(&tok, tok)) {
         cond_incl->included = true;
       } else {
-        tok = skip_cond_incl(tok, true);
+        tok = skip_cond_incl(tok);
       }
       free_token(hash_tok);
       continue;
@@ -1337,7 +1354,7 @@ static Token *preprocess2(Token *tok) {
       tok = advance(tok);
       tok = skip_line_and_free(tok);
       if (cond_incl->included) {
-        tok = skip_cond_incl(tok, true);
+        tok = skip_cond_incl(tok);
       }
       free_token(hash_tok);
       continue;

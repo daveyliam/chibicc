@@ -1555,7 +1555,8 @@ void codegen(Prog *progs, ByteArray *out) {
   int entry_point_offset = current_offset;
 
   // Emit relocation handlers.
-  // These fix up data-to-code and data-to-data references at runtime.
+  // These run before _start() and fix up data-to-code and data-to-data
+  // references at runtime.
   Label *data_start_label = new_label();
   emit_mov_fp_sp();
   for (Prog *prog = progs; prog; prog = prog->next) {
@@ -1581,7 +1582,7 @@ void codegen(Prog *progs, ByteArray *out) {
   }
   emit_mov_sp_fp();
 
-  // Find '_start' function and jump to it.
+  // Find '_start' function and emit a jump to it.
   Obj *start_func = find_exported_obj(progs, "_start");
   if (start_func == NULL || !start_func->is_function) {
     error("failed to find _start function");

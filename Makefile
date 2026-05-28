@@ -13,7 +13,8 @@ CC:=clang
 
 $(shell mkdir -p build/test build/stage2/test build/stage3)
 
-# Stage 1
+# Stage 1.
+# Compile chibicc with clang and test.
 
 build/chibicc: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
@@ -38,7 +39,8 @@ test: $(TESTS) | build/chibicc
 	fi
 	test/driver.sh ./build/chibicc
 
-# Stage 2
+# Stage 2.
+# Build chibicc using the clang compiled chibicc, and test.
 
 build/stage2/chibicc: $(SRCS) | chibicc libc/libc.c
 	./chibicc -o $@ libc/libc.c $^
@@ -60,7 +62,8 @@ test-stage2: $(TESTS_STAGE2) | build/stage2/chibicc libc/libc.c
 	fi
 	test/driver.sh ./build/stage2/chibicc
 
-# Stage 3
+# Stage 3.
+# Build chibicc using the chibicc compiled chibicc, and make sure it matches stage 2.
 
 build/stage3/chibicc: $(SRCS) | build/stage2/chibicc libc/libc.c
 	./build/stage2/chibicc -Iinclude -o $@ libc/libc.c $^
